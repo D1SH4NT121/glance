@@ -162,8 +162,8 @@ This project builds upon the foundational vision of the open-source *Nutshell* p
 
 - **License:** MIT License — see [LICENSE](LICENSE) for details.
 - **Copyright:**
-  - Copyright (c) 2026 **D1SH4NT121** (Modifications, Virtual Tab Bar, and Enhancements)
-  - Copyright (c) 2025 **Tan Han Wei** (Original Base Software - Nutshell)
+  - Copyright (c) 2026 **D1SH4NT121**
+  
 
 ### Third-Party Acknowledgements
 - [Human.js](https://github.com/vladmandic/human) by Vladimir Mandic (Face landmark detection)
