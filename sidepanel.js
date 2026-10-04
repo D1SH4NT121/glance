@@ -13,6 +13,7 @@ let settings = {
   gazeDwellMs: 600,
   headTrackingSpeed: 1, // 1: Slow & Steady, 2: Normal, 3: Fast
   headSpeedMultiplier: 0.72,
+  geminiApiKey: '',
   mouthClickEnabled: true,
   magneticSnapEnabled: true,
   magneticSnapRadius: 40,
@@ -95,6 +96,7 @@ function cacheDomElements() {
   elements.pageDomain = document.getElementById('page-domain');
   elements.pageTitle = document.getElementById('page-title');
   elements.summarizePageBtn = document.getElementById('summarize-page-btn');
+  elements.explainImageBtn = document.getElementById('explain-image-btn');
   elements.calibrateHeadQuickBtn = document.getElementById('calibrate-head-quick-btn');
   elements.recenterQuickBtn = document.getElementById('recenter-quick-btn');
 
@@ -137,6 +139,10 @@ function cacheDomElements() {
   elements.radioSummarization = document.getElementById('radio-summarization');
   elements.radioPrompt = document.getElementById('radio-prompt');
   elements.radioOpenweights = document.getElementById('radio-openweights');
+  elements.radioGemma = document.getElementById('radio-gemma');
+  elements.gemmaContainer = document.getElementById('gemma-container');
+  elements.geminiApiKey = document.getElementById('gemini-api-key');
+  elements.saveApiKeyBtn = document.getElementById('save-api-key-btn');
   elements.promptContainer = document.getElementById('prompt-container');
   elements.customPrompt = document.getElementById('custom-prompt');
 }
@@ -146,7 +152,7 @@ async function loadSettings() {
   const stored = await chrome.storage.local.get([
     'apiChoice', 'customPrompt', 'displayMode', 'gazeEnabled', 'gazeDwellMs',
     'mouthClickEnabled', 'mouthCalV1', 'winkSeekEnabled', 'magneticSnapEnabled', 'magneticSnapRadius',
-    'headTrackingSpeed', 'headSpeedMultiplier'
+    'headTrackingSpeed', 'headSpeedMultiplier', 'geminiApiKey'
   ]);
 
   if (stored.apiChoice) settings.apiChoice = stored.apiChoice;
@@ -156,6 +162,7 @@ async function loadSettings() {
   if (typeof stored.gazeDwellMs === 'number') settings.gazeDwellMs = stored.gazeDwellMs;
   if (typeof stored.headTrackingSpeed === 'number') settings.headTrackingSpeed = stored.headTrackingSpeed;
   if (typeof stored.headSpeedMultiplier === 'number') settings.headSpeedMultiplier = stored.headSpeedMultiplier;
+  if (stored.geminiApiKey) settings.geminiApiKey = stored.geminiApiKey;
   if (typeof stored.mouthClickEnabled === 'boolean') settings.mouthClickEnabled = stored.mouthClickEnabled;
   if (typeof stored.magneticSnapEnabled === 'boolean') settings.magneticSnapEnabled = stored.magneticSnapEnabled;
   if (typeof stored.magneticSnapRadius === 'number') settings.magneticSnapRadius = stored.magneticSnapRadius;
@@ -174,12 +181,15 @@ async function loadSettings() {
 
   if (elements.displayMode) elements.displayMode.value = settings.displayMode;
   if (elements.customPrompt) elements.customPrompt.value = settings.customPrompt;
+  if (elements.geminiApiKey) elements.geminiApiKey.value = settings.geminiApiKey;
 
   // API choice radios
   if (settings.apiChoice === 'summarization' && elements.radioSummarization) elements.radioSummarization.checked = true;
   if (settings.apiChoice === 'prompt' && elements.radioPrompt) elements.radioPrompt.checked = true;
   if (settings.apiChoice === 'openweights' && elements.radioOpenweights) elements.radioOpenweights.checked = true;
+  if (settings.apiChoice === 'gemma' && elements.radioGemma) elements.radioGemma.checked = true;
   togglePromptContainer();
+  toggleGemmaContainer();
 
   // Sync quick action badges
   updateQuickBadges();
@@ -363,6 +373,11 @@ function setupEventListeners() {
     elements.summarizePageBtn.addEventListener('click', handleSummarizeActivePage);
   }
 
+  // Explain Focused Image Button (Gemma 4 Multimodal Vision)
+  if (elements.explainImageBtn) {
+    elements.explainImageBtn.addEventListener('click', handleExplainFocusedImage);
+  }
+
   // Calibrate & Re-Center Quick Buttons
   if (elements.calibrateHeadQuickBtn) {
     elements.calibrateHeadQuickBtn.addEventListener('click', triggerHeadCalibration);
@@ -519,9 +534,27 @@ function setupEventListeners() {
     radio.addEventListener('change', (e) => {
       settings.apiChoice = e.target.value;
       togglePromptContainer();
+      toggleGemmaContainer();
       chrome.storage.local.set({ apiChoice: settings.apiChoice });
     });
   });
+
+  if (elements.saveApiKeyBtn && elements.geminiApiKey) {
+    elements.saveApiKeyBtn.addEventListener('click', () => {
+      const key = elements.geminiApiKey.value.trim();
+      settings.geminiApiKey = key;
+      chrome.storage.local.set({ geminiApiKey: key });
+      elements.saveApiKeyBtn.textContent = 'Saved! ✓';
+      elements.saveApiKeyBtn.style.background = '#ECFDF5';
+      elements.saveApiKeyBtn.style.color = '#059669';
+      setTimeout(() => {
+        elements.saveApiKeyBtn.textContent = 'Save Key';
+        elements.saveApiKeyBtn.style.background = '';
+        elements.saveApiKeyBtn.style.color = '';
+      }, 2000);
+      showGloMessage(key ? "🔑 Gemma 4 / Gemini API key active!" : "API key cleared");
+    });
+  }
 
   if (elements.customPrompt) {
     elements.customPrompt.addEventListener('input', (e) => {
@@ -559,6 +592,101 @@ function togglePromptContainer() {
   if (elements.promptContainer) {
     elements.promptContainer.classList.toggle('hidden', settings.apiChoice !== 'prompt');
   }
+}
+
+function toggleGemmaContainer() {
+  if (elements.gemmaContainer) {
+    elements.gemmaContainer.classList.toggle('hidden', settings.apiChoice !== 'gemma');
+  }
+}
+
+// Explain visual element currently under gaze or in viewport with Gemma 4 Vision
+async function handleExplainFocusedImage() {
+  if (!currentTab.id) {
+    showGloMessage("⚠️ Please open a webpage with images to explain!");
+    return;
+  }
+
+  showGloMessage("👁️ Inspecting visual under your gaze...");
+  if (elements.contentArea) elements.contentArea.classList.remove('hidden');
+  if (elements.summaryTitle) elements.summaryTitle.textContent = "👁️ Multimodal Visual Analysis";
+  if (elements.aiSummary) {
+    elements.aiSummary.innerHTML = '<div style="padding:14px;text-align:center;font-weight:700;color:#71717A;">Locating focused image and preparing Gemma 4 Vision analysis... ✦</div>';
+  }
+
+  try {
+    const visualResult = await chrome.tabs.sendMessage(currentTab.id, {
+      type: 'GET_FOCUSED_IMAGE'
+    }).catch(() => null);
+
+    if (!visualResult || !visualResult.hasImage) {
+      const msg = visualResult?.message || "No prominent image or diagram found in the current view. Look directly at an image and try again!";
+      if (elements.aiSummary) {
+        elements.aiSummary.innerHTML = `<div style="padding:12px;background:#FEF3C7;border-radius:8px;color:#92400E;font-size:12px;line-height:1.5;">${msg}</div>`;
+      }
+      showGloMessage("⚠️ No visual element in focus");
+      return;
+    }
+
+    showGloMessage("🧠 Gemma 4 Vision analyzing visual composition...");
+
+    const thumbHtml = visualResult.dataUrl || (visualResult.src && !visualResult.src.startsWith('chrome') ? visualResult.src : '');
+    if (elements.aiSummary) {
+      elements.aiSummary.innerHTML = `
+        <div style="margin-bottom:10px;text-align:center;">
+          ${thumbHtml ? `<img src="${thumbHtml}" style="max-height:140px;max-width:100%;border-radius:8px;border:2px solid #171717;box-shadow:2px 2px 0 #171717;object-fit:contain;" />` : ''}
+          <div style="font-size:11px;color:#71717A;margin-top:6px;font-weight:600;">Target: ${visualResult.alt || visualResult.title || 'Focused visual element'}</div>
+        </div>
+        <div style="padding:10px;text-align:center;font-weight:700;color:#7C5CFF;">Analyzing with Gemma 4 / Gemini Multimodal Engine... ✦</div>
+      `;
+    }
+
+    const response = await chrome.runtime.sendMessage({
+      type: 'ANALYZE_IMAGE_MULTIMODAL',
+      dataUrl: visualResult.dataUrl,
+      src: visualResult.src,
+      alt: visualResult.alt,
+      title: visualResult.title,
+      url: visualResult.url
+    });
+
+    if (response && response.status === 'complete' && response.summary) {
+      let renderedHtml = `
+        <div style="margin-bottom:12px;text-align:center;">
+          ${thumbHtml ? `<img src="${thumbHtml}" style="max-height:130px;max-width:100%;border-radius:8px;border:2px solid #171717;box-shadow:2px 2px 0 #171717;object-fit:contain;" />` : ''}
+          <div style="font-size:11px;color:#71717A;margin-top:4px;font-weight:700;">Target: ${visualResult.alt || visualResult.title || 'Visual asset'} (${visualResult.width}×${visualResult.height}px)</div>
+        </div>
+      `;
+      renderedHtml += parseMarkdownSimple(response.summary);
+      if (elements.aiSummary) {
+        elements.aiSummary.innerHTML = renderedHtml;
+      }
+      showGloMessage("🎉 Image explained with Gemma 4 Vision ✦");
+    } else {
+      const err = response?.error || 'Multimodal vision analysis could not be completed.';
+      if (elements.aiSummary) {
+        elements.aiSummary.innerHTML = `<div style="padding:10px;background:#FEE2E2;border-radius:8px;color:#991B1B;font-weight:600;">${err}</div>`;
+      }
+      showGloMessage("⚠️ Vision analysis error");
+    }
+  } catch (err) {
+    console.error('[Sidepanel] Multimodal explain error:', err);
+    if (elements.aiSummary) {
+      elements.aiSummary.innerHTML = `<div style="padding:10px;background:#FEE2E2;border-radius:8px;color:#991B1B;font-weight:600;">${err.message || 'Vision request failed'}</div>`;
+    }
+    showGloMessage("⚠️ Could not analyze image");
+  }
+}
+
+// Simple markdown formatter helper
+function parseMarkdownSimple(text) {
+  if (!text) return '';
+  return text
+    .replace(/^### (.*$)/gim, '<h3 style="font-size:13px;font-weight:800;margin:8px 0 4px 0;">$1</h3>')
+    .replace(/^## (.*$)/gim, '<h2 style="font-size:14px;font-weight:800;margin:10px 0 6px 0;">$1</h2>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^\* (.*$)/gim, '<li style="margin-left:14px;margin-bottom:4px;">$1</li>')
+    .replace(/\n\n/g, '<p style="margin-bottom:8px;"></p>');
 }
 
 // Summarize current active webpage

@@ -2047,12 +2047,93 @@
         safeSendResponse({ status: 'ok' });
         return true;
       }
+
+      if (message.type === 'GET_FOCUSED_IMAGE') {
+        const visual = extractFocusedVisual();
+        safeSendResponse(visual);
+        return true;
+      }
     } catch (e) {
       console.debug('[Content] Safely caught onMessage error:', e);
       return false;
     }
     return false;
   });
+
+  // Extract focused visual under gaze or primary visible visual in viewport
+  function extractFocusedVisual() {
+    let target = null;
+    // 1. Try element directly under the user's head-tracking gaze point
+    if (window.__lastGazePoint && Number.isFinite(window.__lastGazePoint.x) && Number.isFinite(window.__lastGazePoint.y)) {
+      const elAtPoint = document.elementFromPoint(window.__lastGazePoint.x, window.__lastGazePoint.y);
+      if (elAtPoint) {
+        if (['IMG', 'CANVAS', 'VIDEO', 'SVG'].includes(elAtPoint.tagName)) {
+          target = elAtPoint;
+        } else {
+          target = elAtPoint.querySelector('img, video, canvas, svg') || elAtPoint.closest('figure, picture, [role="img"]');
+          if (target && target.querySelector('img')) {
+            target = target.querySelector('img');
+          }
+        }
+      }
+    }
+
+    // 2. If no target directly under gaze, scan for the most prominent image in viewport
+    if (!target) {
+      const candidates = Array.from(document.querySelectorAll('img, picture img, article img, figure img, main img'));
+      let maxArea = 0;
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      for (const el of candidates) {
+        const r = el.getBoundingClientRect();
+        if (r.bottom > 20 && r.top < vh - 20 && r.right > 20 && r.left < vw - 20 && r.width >= 60 && r.height >= 60) {
+          const area = r.width * r.height;
+          if (area > maxArea) {
+            maxArea = area;
+            target = el;
+          }
+        }
+      }
+    }
+
+    if (!target) {
+      return { hasImage: false, message: 'No prominent visual element found in current viewport.' };
+    }
+
+    const rect = target.getBoundingClientRect();
+    const alt = target.alt || target.getAttribute('aria-label') || target.title || '';
+    const src = target.currentSrc || target.src || '';
+
+    // Convert to canvas dataUrl if possible (with graceful fallback for cross-origin images)
+    let dataUrl = null;
+    try {
+      if (target.tagName === 'CANVAS') {
+        dataUrl = target.toDataURL('image/jpeg', 0.85);
+      } else if (target.tagName === 'IMG' && target.complete && target.naturalWidth > 0) {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.min(800, target.naturalWidth);
+        canvas.height = Math.round((canvas.width / target.naturalWidth) * target.naturalHeight);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(target, 0, 0, canvas.width, canvas.height);
+        dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      }
+    } catch (_) {
+      // Cross-origin tainted canvas: dataUrl remains null, background.js will fetch src directly
+      dataUrl = null;
+    }
+
+    return {
+      hasImage: true,
+      dataUrl,
+      src,
+      alt,
+      tagName: target.tagName,
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      title: document.title || 'Active Webpage',
+      url: window.location.href
+    };
+  }
 
   // Listen for gaze:status events and relay to sidepanel
   window.addEventListener('gaze:status', (event) => {

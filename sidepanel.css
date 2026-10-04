@@ -695,6 +695,23 @@ html, body {
   color: var(--color-ink);
 }
 
+.brutal-input {
+  background: #FAFAFA;
+  border: 1.5px solid var(--color-ink);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  outline: none;
+  box-shadow: 1px 1px 0px #171717;
+  transition: all 0.15s ease;
+}
+.brutal-input:focus {
+  background: #FFFFFF;
+  border-color: var(--color-purple);
+  box-shadow: 2px 2px 0px var(--color-purple);
+}
+
 .brutal-textarea {
   width: 100%;
   background: #FAFAFA;

@@ -8,11 +8,15 @@ Glance is an assistive browser extension that enables fully hands-free web navig
 
 ## 🚀 Key Open-Source AI Features
 
-### 1. 🧠 100% In-Browser Open-Weight LLM (WebGPU / WebLLM)
+### 1. 👁️ ✦ Gemma 4 & Gemini Multimodal Vision ("Look & Explain")
+- **Multimodal Image & Chart Understanding:** Glance packs multimodal vision capability allowing hands-free users to dwell their gaze on any image, chart, infographic, or video frame and receive an instant intelligent visual breakdown.
+- **Powered by Gemma 4 / Gemini API:** Combines local visual element targeting with cloud/on-device multimodal reasoning to transcribe embedded text, interpret complex graphics, and explain visual content for users with motor or visual impairments.
+
+### 2. 🧠 100% In-Browser Open-Weight LLM (WebGPU / WebLLM)
 - **Local Open-Weight Acceleration:** In addition to Chrome's built-in Gemini Nano API, Glance integrates an **in-browser open-weight neural engine** (`ai/open-weights-engine.js`) supporting **SmolLM2**, **Llama 3.2**, and local neural summarization pipelines.
 - **Client-Side Processing:** Accelerates via WebGPU (`navigator.gpu`) with zero cloud dependencies, zero API keys, and 100% offline edge execution.
 
-### 2. 🤖 "Agent Skill Open Standard" Browser Agent (ASOS v1.0)
+### 3. 🤖 "Agent Skill Open Standard" Browser Agent (ASOS v1.0)
 - **Autonomous Hands-Free Agency:** Implements the official Agent Skill Open Standard specification (`gaze/agent-skill-harness.js`).
 - **Standard Action Schema:** Decomposes user objectives into atomic actions: `click`, `scroll`, `type`, `navigate`, `extract`, and `summarize`.
 - **Hands-Free Palette:** Press <kbd>Alt</kbd>+<kbd>A</kbd> or use the Side Panel to run high-level goals (*"Summarize article"*, *"Scroll to comments"*, *"Find pricing"*).

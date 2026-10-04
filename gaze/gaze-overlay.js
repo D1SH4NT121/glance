@@ -207,6 +207,7 @@
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return;
     }
+    window.__lastGazePoint = { x, y, ts };
     ensureElements();
 
     hasPointerPosition = true;
