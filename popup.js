@@ -422,6 +422,7 @@
     // Trigger real background summarization if on a live tab
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.tabs) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (chrome.runtime.lastError) return;
         const tab = tabs && tabs[0];
         if (!tab || !tab.url) {
           finishSummaryDisplay("### Active Page Gist\n* Hands-free browsing enabled with real-time head tracking.\n* Mouth open & close gesture provides universal single-click navigation.\n* WebGPU models summarize content entirely on-device without cloud transmission.");
@@ -548,6 +549,7 @@
         setState('calibration');
         if (typeof chrome !== 'undefined' && chrome.tabs) {
           chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (chrome.runtime.lastError) return;
             if (tabs && tabs[0]) {
               chrome.tabs.sendMessage(tabs[0].id, { type: 'TRIGGER_CALIBRATION' }).catch(() => {});
             }
@@ -562,6 +564,7 @@
       btnRecenter.addEventListener('click', () => {
         if (typeof chrome !== 'undefined' && chrome.tabs) {
           chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (chrome.runtime.lastError) return;
             if (tabs && tabs[0]) {
               chrome.tabs.sendMessage(tabs[0].id, { type: 'gaze:recenter' }).catch(() => {});
             }

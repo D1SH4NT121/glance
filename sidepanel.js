@@ -852,6 +852,7 @@ function dispatchAgentGoal(goal) {
 // Broadcast message to active tab
 function broadcastToActiveTab(msg) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (chrome.runtime.lastError) return;
     if (tabs && tabs[0]) {
       chrome.tabs.sendMessage(tabs[0].id, msg).catch(() => {});
     }
@@ -860,6 +861,7 @@ function broadcastToActiveTab(msg) {
 
 function broadcastScriptToTab(func, args = []) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (chrome.runtime.lastError) return;
     if (tabs && tabs[0]) {
       chrome.scripting.executeScript({
         target: { tabId: tabs[0].id },

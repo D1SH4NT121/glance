@@ -775,7 +775,8 @@ function broadcastStreamingUpdate(job, partialSummary) {
     });
   } else {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
+      if (chrome.runtime.lastError) return;
+      if (tabs && tabs[0]) {
         chrome.tabs.sendMessage(tabs[0].id, payload).catch(() => {
           // Content script not ready, ignore
         });
@@ -1185,7 +1186,8 @@ function broadcastProcessingStatus(status, title, job) {
     chrome.tabs.sendMessage(job.tabId, message).catch(() => {});
   } else {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
+      if (chrome.runtime.lastError) return;
+      if (tabs && tabs[0]) {
         chrome.tabs.sendMessage(tabs[0].id, message).catch(() => {});
       }
     });
@@ -2129,6 +2131,10 @@ function isRestrictedFetchUrl(urlStr) {
   // ========================================
   if (message.type === 'GET_ALL_TABS') {
     chrome.tabs.query({ currentWindow: true }, (tabs) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ tabs: [] });
+        return;
+      }
       const tabList = (tabs || []).map(t => ({
         id: t.id,
         title: t.title || 'New Tab',
@@ -2146,6 +2152,19 @@ function isRestrictedFetchUrl(urlStr) {
   if (message.type === 'SWITCH_TAB') {
     if (message.tabId) {
       chrome.tabs.update(message.tabId, { active: true }, (tab) => {
+        if (chrome.runtime.lastError) {
+          const err = chrome.runtime.lastError.message || '';
+          if (err.includes('dragging a tab')) {
+            // User is currently dragging a tab in Chrome, retry smoothly once after drag settles
+            setTimeout(() => {
+              chrome.tabs.update(message.tabId, { active: true }, () => {
+                if (chrome.runtime.lastError) { /* handled */ }
+              });
+            }, 250);
+          }
+          sendResponse({ success: false, error: err });
+          return;
+        }
         sendResponse({ success: true, tab });
       });
     } else {
@@ -2157,6 +2176,10 @@ function isRestrictedFetchUrl(urlStr) {
   if (message.type === 'CLOSE_TAB') {
     if (message.tabId) {
       chrome.tabs.remove(message.tabId, () => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ success: false, error: chrome.runtime.lastError.message });
+          return;
+        }
         sendResponse({ success: true });
       });
     } else {
@@ -2167,6 +2190,10 @@ function isRestrictedFetchUrl(urlStr) {
 
   if (message.type === 'CREATE_TAB') {
     chrome.tabs.create({ url: message.url || 'chrome://newtab' }, (tab) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ success: false, error: chrome.runtime.lastError.message });
+        return;
+      }
       sendResponse({ success: true, tab });
     });
     return true;
@@ -2176,6 +2203,7 @@ function isRestrictedFetchUrl(urlStr) {
 // Broadcast tab changes to active tabs so the virtual tab bar stays updated
 function broadcastTabUpdate() {
   chrome.tabs.query({ currentWindow: true }, (tabs) => {
+    if (chrome.runtime.lastError) return;
     if (!tabs || tabs.length === 0) return;
     const tabList = tabs.map(t => ({
       id: t.id,
