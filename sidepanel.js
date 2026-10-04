@@ -17,7 +17,8 @@ let settings = {
   mouthClickEnabled: true,
   magneticSnapEnabled: true,
   magneticSnapRadius: 40,
-  winkSeekEnabled: true
+  winkSeekEnabled: true,
+  ollamaEndpoint: 'http://127.0.0.1:11434'
 };
 
 let currentTab = {
@@ -140,6 +141,12 @@ function cacheDomElements() {
   elements.radioPrompt = document.getElementById('radio-prompt');
   elements.radioOpenweights = document.getElementById('radio-openweights');
   elements.radioGemma = document.getElementById('radio-gemma');
+  elements.radioOllama = document.getElementById('radio-ollama');
+  elements.ollamaContainer = document.getElementById('ollama-container');
+  elements.ollamaEndpoint = document.getElementById('ollama-endpoint');
+  elements.checkOllamaBtn = document.getElementById('check-ollama-btn');
+  elements.ollamaStatusBadge = document.getElementById('ollama-status-badge');
+  elements.ollamaHelpText = document.getElementById('ollama-help-text');
   elements.gemmaContainer = document.getElementById('gemma-container');
   elements.geminiApiKey = document.getElementById('gemini-api-key');
   elements.saveApiKeyBtn = document.getElementById('save-api-key-btn');
@@ -188,8 +195,13 @@ async function loadSettings() {
   if (settings.apiChoice === 'prompt' && elements.radioPrompt) elements.radioPrompt.checked = true;
   if (settings.apiChoice === 'openweights' && elements.radioOpenweights) elements.radioOpenweights.checked = true;
   if (settings.apiChoice === 'gemma' && elements.radioGemma) elements.radioGemma.checked = true;
+  if (settings.apiChoice === 'ollama' && elements.radioOllama) elements.radioOllama.checked = true;
+  if (stored.ollamaEndpoint) settings.ollamaEndpoint = stored.ollamaEndpoint;
+  if (elements.ollamaEndpoint) elements.ollamaEndpoint.value = settings.ollamaEndpoint;
   togglePromptContainer();
   toggleGemmaContainer();
+  toggleOllamaContainer();
+  if (settings.apiChoice === 'ollama') checkOllamaStatus();
 
   // Sync quick action badges
   updateQuickBadges();
@@ -570,9 +582,21 @@ function setupEventListeners() {
       settings.apiChoice = e.target.value;
       togglePromptContainer();
       toggleGemmaContainer();
+      toggleOllamaContainer();
       chrome.storage.local.set({ apiChoice: settings.apiChoice });
+      if (settings.apiChoice === 'ollama') checkOllamaStatus();
     });
   });
+
+  if (elements.checkOllamaBtn) {
+    elements.checkOllamaBtn.addEventListener('click', checkOllamaStatus);
+  }
+  if (elements.ollamaEndpoint) {
+    elements.ollamaEndpoint.addEventListener('input', (e) => {
+      settings.ollamaEndpoint = e.target.value.trim();
+      chrome.storage.local.set({ ollamaEndpoint: settings.ollamaEndpoint });
+    });
+  }
 
   if (elements.saveApiKeyBtn && elements.geminiApiKey) {
     elements.geminiApiKey.addEventListener('input', (e) => {
@@ -638,6 +662,51 @@ function togglePromptContainer() {
 function toggleGemmaContainer() {
   if (elements.gemmaContainer) {
     elements.gemmaContainer.classList.toggle('hidden', settings.apiChoice !== 'gemma');
+  }
+}
+
+function toggleOllamaContainer() {
+  if (elements.ollamaContainer) {
+    elements.ollamaContainer.classList.toggle('hidden', settings.apiChoice !== 'ollama');
+  }
+}
+
+// Check local Ollama status
+async function checkOllamaStatus() {
+  const endpoint = (elements.ollamaEndpoint ? elements.ollamaEndpoint.value.trim() : '') || settings.ollamaEndpoint || 'http://127.0.0.1:11434';
+  if (elements.ollamaStatusBadge) {
+    elements.ollamaStatusBadge.textContent = 'Checking...';
+    elements.ollamaStatusBadge.style.background = '#FEF3C7';
+    elements.ollamaStatusBadge.style.color = '#92400E';
+  }
+  try {
+    const res = await fetch(`${endpoint.replace(/\/$/, '')}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (res.ok) {
+      const data = await res.json();
+      const models = (data.models || []).map(m => m.name);
+      if (elements.ollamaStatusBadge) {
+        elements.ollamaStatusBadge.textContent = `Online (${models.length} model${models.length === 1 ? '' : 's'}) ✓`;
+        elements.ollamaStatusBadge.style.background = '#ECFDF5';
+        elements.ollamaStatusBadge.style.color = '#059669';
+      }
+      if (elements.ollamaHelpText) {
+        elements.ollamaHelpText.innerHTML = models.length > 0 
+          ? `Available local models: <strong>${models.join(', ')}</strong>` 
+          : `Ollama is running! Run: <code>ollama run moondream</code> to pull vision model.`;
+      }
+      showGloMessage("🦙 Local Ollama connected! Zero quota limits ✦");
+    } else {
+      throw new Error(`Server returned status ${res.status}`);
+    }
+  } catch (err) {
+    if (elements.ollamaStatusBadge) {
+      elements.ollamaStatusBadge.textContent = 'Offline';
+      elements.ollamaStatusBadge.style.background = '#FEE2E2';
+      elements.ollamaStatusBadge.style.color = '#991B1B';
+    }
+    if (elements.ollamaHelpText) {
+      elements.ollamaHelpText.innerHTML = `Ollama server not detected. Run in PowerShell: <code>winget install Ollama.Ollama</code> then <code>ollama run moondream</code>`;
+    }
   }
 }
 

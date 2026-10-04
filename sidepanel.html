@@ -345,6 +345,26 @@
           <input type="radio" name="api-choice" value="gemma" id="radio-gemma">
           <span>✦ Gemma 4 &amp; Gemini Multimodal API</span>
         </label>
+        <label class="radio-pill-item">
+          <input type="radio" name="api-choice" value="ollama" id="radio-ollama">
+          <span>🦙 Local Ollama (Zero Quota / 100% Offline)</span>
+        </label>
+      </div>
+
+      <div id="ollama-container" class="hidden" style="margin-top: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <label class="toggle-title" for="ollama-endpoint" style="font-size: 11px;">
+            Local Ollama Endpoint:
+          </label>
+          <span id="ollama-status-badge" style="font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: #FEE2E2; color: #991B1B;">Offline</span>
+        </div>
+        <div style="display: flex; gap: 6px;">
+          <input type="text" id="ollama-endpoint" class="brutal-input" value="http://127.0.0.1:11434" style="flex: 1; font-size: 11px;">
+          <button id="check-ollama-btn" class="btn-secondary-brutal" style="padding: 4px 8px; font-size: 11px; white-space: nowrap;">Check</button>
+        </div>
+        <div style="font-size: 9.5px; color: var(--color-muted); margin-top: 4px; line-height: 1.35;" id="ollama-help-text">
+          Run in terminal: <code>ollama run moondream</code> (vision) or <code>ollama run gemma2:2b</code> (text).
+        </div>
       </div>
 
       <div id="gemma-container" class="hidden" style="margin-top: 8px;">

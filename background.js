@@ -288,12 +288,95 @@ async function useOpenWeightsEngine({ job, text, signal, url }) {
   throw new Error('Open-Weights Engine is not initialized in service worker');
 }
 
+// Local Ollama caller for vision & text (100% offline, zero quota limits)
+async function callOllamaLocal({ endpoint = 'http://127.0.0.1:11434', prompt, base64Image, systemPrompt }) {
+  const stored = await chrome.storage.local.get(['ollamaEndpoint']);
+  const baseEndpoint = (stored && stored.ollamaEndpoint) || endpoint || 'http://127.0.0.1:11434';
+  const url = baseEndpoint.replace(/\/$/, '');
+
+  // 1. Fetch available local models
+  let availableModels = [];
+  try {
+    const tagsResp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(2500) });
+    if (tagsResp.ok) {
+      const data = await tagsResp.json();
+      availableModels = (data.models || []).map(m => m.name);
+    }
+  } catch (e) {
+    throw new Error(`Local Ollama is offline at ${url}. Start it with 'ollama serve' or run 'winget install Ollama.Ollama'`);
+  }
+
+  // Pick best available model
+  let targetModel = null;
+  if (base64Image) {
+    const visionCandidates = ['moondream', 'llama3.2-vision', 'llava', 'minicpm-v', 'bakllava'];
+    for (const vc of visionCandidates) {
+      const match = availableModels.find(m => m.toLowerCase().includes(vc));
+      if (match) {
+        targetModel = match;
+        break;
+      }
+    }
+    if (!targetModel) {
+      targetModel = availableModels.find(m => m.includes('vision') || m.includes('llava')) || 'moondream';
+    }
+  } else {
+    const textCandidates = ['gemma2:2b', 'gemma2', 'llama3.2:1b', 'llama3.2', 'qwen2.5', 'mistral', 'phi3'];
+    for (const tc of textCandidates) {
+      const match = availableModels.find(m => m.toLowerCase().includes(tc));
+      if (match) {
+        targetModel = match;
+        break;
+      }
+    }
+    if (!targetModel) {
+      targetModel = availableModels[0] || 'gemma2:2b';
+    }
+  }
+
+  console.log(`[Background] 🦙 Sending request to local Ollama with model: ${targetModel}`);
+
+  const bodyPayload = {
+    model: targetModel,
+    prompt: prompt || systemPrompt,
+    stream: false,
+    options: {
+      temperature: 0.3
+    }
+  };
+
+  if (base64Image) {
+    bodyPayload.images = [base64Image];
+  }
+
+  const genResp = await fetch(`${url}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyPayload)
+  });
+
+  if (!genResp.ok) {
+    const errText = await genResp.text().catch(() => '');
+    throw new Error(`Local Ollama error (${genResp.status}): ${errText || 'Model failed to generate response'}`);
+  }
+
+  const genData = await genResp.json();
+  return genData.response;
+}
+
 // ✦ Gemma 4 & Gemini Multimodal Generation Engine
 let cachedWorkingGeminiModel = null;
 
-// Helper: Call multimodal vision API with model cascade & multi-provider support
+// Helper: Call multimodal vision API with model cascade, Ollama local & multi-provider support
 async function callMultimodalVisionAPI({ apiKey, base64Data, mimeType, systemPrompt }) {
   const cleanKey = (apiKey || '').trim().replace(/^["']|["']$/g, '');
+
+  // 0. Local Ollama (explicitly selected or endpoint URL passed)
+  const isOllama = settings.apiChoice === 'ollama' || cleanKey.includes('11434') || cleanKey === 'ollama' || cleanKey === 'local' || cleanKey.startsWith('http');
+  if (isOllama) {
+    const ollamaUrl = cleanKey.startsWith('http') ? cleanKey : 'http://127.0.0.1:11434';
+    return await callOllamaLocal({ endpoint: ollamaUrl, base64Image: base64Data, systemPrompt });
+  }
 
   // 1. OpenRouter (sk-or-...)
   if (cleanKey.startsWith('sk-or-')) {
@@ -379,7 +462,6 @@ async function callMultimodalVisionAPI({ apiKey, base64Data, mimeType, systemPro
   }
 
   // 4. Google Gemini / Gemma Multimodal Engine
-  // Modern Google AI Studio projects use gemini-2.0-flash by default; fall back through supported versions
   const candidateModels = cachedWorkingGeminiModel 
     ? [cachedWorkingGeminiModel, 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest']
     : ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro'];
@@ -412,7 +494,6 @@ async function callMultimodalVisionAPI({ apiKey, base64Data, mimeType, systemPro
       });
 
       if (resp.status === 404) {
-        // Model not found in this region/key tier; continue to next model in cascade
         console.warn(`[Background] Gemini model "${model}" returned 404. Trying next model...`);
         lastDetailedError = `Model "${model}" not found for this API key tier.`;
         continue;
@@ -427,6 +508,18 @@ async function callMultimodalVisionAPI({ apiKey, base64Data, mimeType, systemPro
         } catch (_) {
           detailedMsg = errText;
         }
+
+        // Automatic fallback to local Ollama if cloud quota exceeded (HTTP 429)
+        if (resp.status === 429 || detailedMsg.includes('quota') || detailedMsg.includes('RESOURCE_EXHAUSTED')) {
+          console.warn('[Background] Cloud API quota reached! Attempting local Ollama fallback...');
+          try {
+            const localResult = await callOllamaLocal({ base64Image: base64Data, systemPrompt });
+            if (localResult) return `${localResult}\n\n*🦙 Generated with Local Ollama (zero quota limits!)*`;
+          } catch (ollamaErr) {
+            console.warn('[Background] Local Ollama not available during quota fallback:', ollamaErr.message);
+          }
+        }
+
         throw new Error(`Google API (${resp.status}): ${detailedMsg || 'Check API key or quota.'}`);
       }
 
@@ -444,24 +537,37 @@ async function callMultimodalVisionAPI({ apiKey, base64Data, mimeType, systemPro
     }
   }
 
-  throw new Error(`Gemini Multimodal error: ${lastDetailedError || 'All models returned 404. Verify API key from https://aistudio.google.com/app/apikey'}`);
+  // If cloud models all failed, try local Ollama before giving up
+  try {
+    const localResult = await callOllamaLocal({ base64Image: base64Data, systemPrompt });
+    if (localResult) return `${localResult}\n\n*🦙 Generated with Local Ollama (zero quota limits!)*`;
+  } catch (_) {}
+
+  throw new Error(`Gemini Multimodal error: ${lastDetailedError || 'Cloud quota finished. Switch to 🦙 Local Ollama in Side Panel or run: winget install Ollama.Ollama'}`);
 }
 
 // ✦ Gemma 4 & Gemini Multimodal Generation Engine
 async function useGemmaAPI({ job, text, signal, url }) {
+  if (settings.apiChoice === 'ollama') {
+    return await callOllamaLocal({ prompt: `${settings.customPrompt || 'Summarize this in 3-4 key points'}:\n\n${text.slice(0, 8000)}` });
+  }
+
   console.log('[Background] ✦ Running Gemma 4 / Gemini API');
   const stored = await chrome.storage.local.get(['geminiApiKey']);
   const apiKey = (stored && stored.geminiApiKey) || settings.geminiApiKey || '';
 
   if (!apiKey) {
-    console.log('[Background] No Gemini API key found, generating local summary with OpenWeights');
-    let localSummary = '';
     try {
-      localSummary = await useOpenWeightsEngine({ job, text, signal, url });
+      return await callOllamaLocal({ prompt: `${settings.customPrompt || 'Summarize this in 3-4 key points'}:\n\n${text.slice(0, 8000)}` });
     } catch (_) {
-      localSummary = text.slice(0, 300) + '...';
+      let localSummary = '';
+      try {
+        localSummary = await useOpenWeightsEngine({ job, text, signal, url });
+      } catch (_) {
+        localSummary = text.slice(0, 300) + '...';
+      }
+      return `### ✦ Gemma 4 & Gemini Multimodal\n\n${localSummary}\n\n*💡 To run offline with zero quota, select 🦙 Local Ollama in the Side Panel!*`;
     }
-    return `### ✦ Gemma 4 & Gemini Multimodal\n\n${localSummary}\n\n*💡 To enable full cloud Gemma 4 reasoning, paste your free Gemini API key in the Side Panel AI settings!*`;
   }
 
   const cleanKey = apiKey.trim().replace(/^["']|["']$/g, '');
@@ -505,6 +611,14 @@ async function useGemmaAPI({ job, text, signal, url }) {
         } catch (_) {
           detailedMsg = errText;
         }
+
+        // Automatic fallback to local Ollama on quota error (429)
+        if (response.status === 429 || detailedMsg.includes('quota') || detailedMsg.includes('RESOURCE_EXHAUSTED')) {
+          try {
+            return await callOllamaLocal({ prompt: promptText });
+          } catch (_) {}
+        }
+
         throw new Error(`Google API (${response.status}): ${detailedMsg || 'Check key or quota'}`);
       }
 
@@ -522,14 +636,20 @@ async function useGemmaAPI({ job, text, signal, url }) {
     }
   }
 
+  // Final fallback to local Ollama
+  try {
+    return await callOllamaLocal({ prompt: promptText });
+  } catch (_) {}
+
   throw lastError || new Error('No compatible Gemini model found for this key.');
 }
 
-// 👁️ Multimodal Visual Inspection with Gemma 4 / Gemini Vision
+// 👁️ Multimodal Visual Inspection with Gemma 4 / Gemini Vision / Local Ollama
 async function handleAnalyzeImageMultimodal(message, sender) {
   const { dataUrl, src, alt, title, url } = message;
-  const stored = await chrome.storage.local.get(['geminiApiKey']);
+  const stored = await chrome.storage.local.get(['geminiApiKey', 'apiChoice']);
   const apiKey = (stored && stored.geminiApiKey) || settings.geminiApiKey || '';
+  const currentApiChoice = (stored && stored.apiChoice) || settings.apiChoice;
 
   let base64Data = null;
   let mimeType = 'image/jpeg';
@@ -559,8 +679,37 @@ async function handleAnalyzeImageMultimodal(message, sender) {
     }
   }
 
+  // 1. If Local Ollama is chosen, run locally with zero quota
+  if (currentApiChoice === 'ollama') {
+    if (!base64Data) {
+      throw new Error('Could not capture image data for local Ollama analysis.');
+    }
+    const systemPrompt = `Analyze this image thoroughly for a hands-free user viewing a webpage titled "${title || ''}". Describe what is visually shown, transcribe any visible text or charts, and provide a 3-bullet takeaway.`;
+    const explanation = await callOllamaLocal({ base64Image: base64Data, systemPrompt });
+    return {
+      status: 'complete',
+      summary: explanation,
+      hasKey: true
+    };
+  }
+
   if (!apiKey) {
-    const fallbackDesc = `### 👁️ Gemma 4 Multimodal Vision Analysis\n\n**Visual Element Detected**:\n- **Alt / Label**: ${alt || 'Web image / diagram'}\n- **Context**: ${title || 'Active Webpage'}\n- **Source URL**: ${src || url || 'Inline asset'}\n\n*💡 To enable full live multimodal intelligence (reading charts, explaining infographics, and describing complex visuals), enter your Gemini API key in the Side Panel AI settings!*`;
+    // Try local Ollama first before giving static fallback
+    if (base64Data) {
+      try {
+        const systemPrompt = `Analyze this image thoroughly for a hands-free accessibility user looking at it on "${title || ''}". Describe what is visually shown, transcribe any text or data, and give a 3-bullet takeaway.`;
+        const localExplanation = await callOllamaLocal({ base64Image: base64Data, systemPrompt });
+        if (localExplanation) {
+          return {
+            status: 'complete',
+            summary: `${localExplanation}\n\n*🦙 Generated locally with Ollama (zero quota limits!)*`,
+            hasKey: true
+          };
+        }
+      } catch (_) {}
+    }
+
+    const fallbackDesc = `### 👁️ Gemma 4 Multimodal Vision Analysis\n\n**Visual Element Detected**:\n- **Alt / Label**: ${alt || 'Web image / diagram'}\n- **Context**: ${title || 'Active Webpage'}\n- **Source URL**: ${src || url || 'Inline asset'}\n\n*💡 Your cloud API quota is finished. To run 100% offline with zero quota limits, switch to 🦙 Local Ollama in the Side Panel!*`;
     return {
       status: 'complete',
       summary: fallbackDesc,
@@ -599,6 +748,10 @@ async function summarizeContent({ job, text, url }) {
   const signal = job.signal;
   await apiInitializationPromise;
 
+  if (settings.apiChoice === 'ollama') {
+    return await callOllamaLocal({ prompt: `${settings.customPrompt || 'Summarize this in 3-4 key points'}:\n\n${text.slice(0, 8000)}` });
+  }
+
   if (settings.apiChoice === 'openweights') {
     return await useOpenWeightsEngine({ job, text, signal, url });
   }
@@ -614,8 +767,12 @@ async function summarizeContent({ job, text, url }) {
       return await usePromptAPI({ job, text, signal, url });
     }
   } catch (err) {
-    console.warn('[Background] Chrome Built-in AI failed, falling back to Open-Weights Engine:', err);
-    return await useOpenWeightsEngine({ job, text, signal, url });
+    console.warn('[Background] Chrome Built-in AI failed, falling back to Open-Weights / Ollama:', err);
+    try {
+      return await callOllamaLocal({ prompt: `${settings.customPrompt || 'Summarize this in 3-4 key points'}:\n\n${text.slice(0, 8000)}` });
+    } catch (_) {
+      return await useOpenWeightsEngine({ job, text, signal, url });
+    }
   }
 }
 
