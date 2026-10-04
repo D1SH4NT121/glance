@@ -289,6 +289,165 @@ async function useOpenWeightsEngine({ job, text, signal, url }) {
 }
 
 // ✦ Gemma 4 & Gemini Multimodal Generation Engine
+let cachedWorkingGeminiModel = null;
+
+// Helper: Call multimodal vision API with model cascade & multi-provider support
+async function callMultimodalVisionAPI({ apiKey, base64Data, mimeType, systemPrompt }) {
+  const cleanKey = (apiKey || '').trim().replace(/^["']|["']$/g, '');
+
+  // 1. OpenRouter (sk-or-...)
+  if (cleanKey.startsWith('sk-or-')) {
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cleanKey}`
+      },
+      body: JSON.stringify({
+        model: 'google/gemma-3-27b-it:free',
+        models: ['google/gemma-3-27b-it:free', 'google/gemma-3-27b-it', 'meta-llama/llama-3.2-11b-vision-instruct', 'openai/gpt-4o-mini'],
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: systemPrompt },
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } }
+          ]
+        }]
+      })
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`OpenRouter Vision API error (${resp.status}): ${errText}`);
+    }
+    const data = await resp.json();
+    return data?.choices?.[0]?.message?.content;
+  }
+
+  // 2. Groq (gsk_...)
+  if (cleanKey.startsWith('gsk_')) {
+    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cleanKey}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.2-11b-vision-preview',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: systemPrompt },
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } }
+          ]
+        }]
+      })
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`Groq Vision API error (${resp.status}): ${errText}`);
+    }
+    const data = await resp.json();
+    return data?.choices?.[0]?.message?.content;
+  }
+
+  // 3. OpenAI (sk-...)
+  if (cleanKey.startsWith('sk-')) {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cleanKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: systemPrompt },
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } }
+          ]
+        }],
+        max_tokens: 600
+      })
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`OpenAI Vision API error (${resp.status}): ${errText}`);
+    }
+    const data = await resp.json();
+    return data?.choices?.[0]?.message?.content;
+  }
+
+  // 4. Google Gemini / Gemma Multimodal Engine
+  // Modern Google AI Studio projects use gemini-2.0-flash by default; fall back through supported versions
+  const candidateModels = cachedWorkingGeminiModel 
+    ? [cachedWorkingGeminiModel, 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest']
+    : ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro'];
+
+  let lastDetailedError = null;
+
+  for (const model of candidateModels) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cleanKey}`;
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: systemPrompt },
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Data
+                }
+              }
+            ]
+          }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 700
+          }
+        })
+      });
+
+      if (resp.status === 404) {
+        // Model not found in this region/key tier; continue to next model in cascade
+        console.warn(`[Background] Gemini model "${model}" returned 404. Trying next model...`);
+        lastDetailedError = `Model "${model}" not found for this API key tier.`;
+        continue;
+      }
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        let detailedMsg = '';
+        try {
+          const errObj = JSON.parse(errText);
+          detailedMsg = errObj?.error?.message || errText;
+        } catch (_) {
+          detailedMsg = errText;
+        }
+        throw new Error(`Google API (${resp.status}): ${detailedMsg || 'Check API key or quota.'}`);
+      }
+
+      const data = await resp.json();
+      const explanation = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (explanation) {
+        cachedWorkingGeminiModel = model;
+        return explanation;
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('404')) {
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  throw new Error(`Gemini Multimodal error: ${lastDetailedError || 'All models returned 404. Verify API key from https://aistudio.google.com/app/apikey'}`);
+}
+
+// ✦ Gemma 4 & Gemini Multimodal Generation Engine
 async function useGemmaAPI({ job, text, signal, url }) {
   console.log('[Background] ✦ Running Gemma 4 / Gemini API');
   const stored = await chrome.storage.local.get(['geminiApiKey']);
@@ -305,37 +464,65 @@ async function useGemmaAPI({ job, text, signal, url }) {
     return `### ✦ Gemma 4 & Gemini Multimodal\n\n${localSummary}\n\n*💡 To enable full cloud Gemma 4 reasoning, paste your free Gemini API key in the Side Panel AI settings!*`;
   }
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const cleanKey = apiKey.trim().replace(/^["']|["']$/g, '');
+  const candidateModels = cachedWorkingGeminiModel 
+    ? [cachedWorkingGeminiModel, 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
+    : ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest'];
+
   const promptText = `${settings.customPrompt || 'Summarize this webpage in 3-4 clear key points'}\n\nURL: ${url || ''}\n\nContent:\n${text.slice(0, 15000)}`;
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        parts: [{ text: promptText }]
-      }],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 600
+  let lastError = null;
+  for (const model of candidateModels) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cleanKey}`;
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: promptText }]
+          }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 600
+          }
+        }),
+        signal: signal
+      });
+
+      if (response.status === 404) {
+        console.warn(`[Background] Text model ${model} returned 404, cascading...`);
+        lastError = new Error(`Model ${model} returned 404`);
+        continue;
       }
-    }),
-    signal: signal
-  });
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '');
-    console.warn('[Background] Gemma API returned error:', response.status, errText);
-    throw new Error(`Gemma/Gemini API error (${response.status}). Check API key or quota.`);
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        let detailedMsg = '';
+        try {
+          const errObj = JSON.parse(errText);
+          detailedMsg = errObj?.error?.message || errText;
+        } catch (_) {
+          detailedMsg = errText;
+        }
+        throw new Error(`Google API (${response.status}): ${detailedMsg || 'Check key or quota'}`);
+      }
+
+      const data = await response.json();
+      const candidate = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (candidate) {
+        cachedWorkingGeminiModel = model;
+        return candidate;
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('404')) {
+        continue;
+      }
+      throw e;
+    }
   }
 
-  const data = await response.json();
-  const candidate = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!candidate) {
-    throw new Error('No response generated by Gemma API');
-  }
-
-  return candidate;
+  throw lastError || new Error('No compatible Gemini model found for this key.');
 }
 
 // 👁️ Multimodal Visual Inspection with Gemma 4 / Gemini Vision
@@ -385,43 +572,17 @@ async function handleAnalyzeImageMultimodal(message, sender) {
     throw new Error('Could not access image data for multimodal analysis.');
   }
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   const systemPrompt = `You are Glance's assistive AI vision companion (powered by Gemma 4 / Gemini). Analyze this image thoroughly for a hands-free accessibility user who is looking at it on a webpage titled "${title || ''}". Describe what is visually shown, transcribe any text or data in the image, explain diagrams or charts, and provide a clear 3-bullet takeaway.`;
 
-  const requestBody = {
-    contents: [{
-      parts: [
-        { text: systemPrompt },
-        {
-          inline_data: {
-            mime_type: mimeType,
-            data: base64Data
-          }
-        }
-      ]
-    }],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 700
-    }
-  };
-
-  const resp = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody)
+  const explanation = await callMultimodalVisionAPI({
+    apiKey,
+    base64Data,
+    mimeType,
+    systemPrompt
   });
 
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => '');
-    console.warn('[Background] Multimodal API error:', resp.status, errText);
-    throw new Error(`Gemma Multimodal API error (${resp.status}). Check API key or quota.`);
-  }
-
-  const data = await resp.json();
-  const explanation = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!explanation) {
-    throw new Error('No visual analysis generated by Gemma Multimodal API.');
+    throw new Error('No visual analysis generated by Multimodal Vision API.');
   }
 
   return {

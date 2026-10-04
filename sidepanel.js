@@ -575,8 +575,14 @@ function setupEventListeners() {
   });
 
   if (elements.saveApiKeyBtn && elements.geminiApiKey) {
+    elements.geminiApiKey.addEventListener('input', (e) => {
+      const key = e.target.value.trim().replace(/^["']|["']$/g, '');
+      settings.geminiApiKey = key;
+      chrome.storage.local.set({ geminiApiKey: key });
+    });
+
     elements.saveApiKeyBtn.addEventListener('click', () => {
-      const key = elements.geminiApiKey.value.trim();
+      const key = elements.geminiApiKey.value.trim().replace(/^["']|["']$/g, '');
       settings.geminiApiKey = key;
       chrome.storage.local.set({ geminiApiKey: key });
       elements.saveApiKeyBtn.textContent = 'Saved! ✓';
