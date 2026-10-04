@@ -507,6 +507,41 @@
     return best;
   }
 
+  function nearestVisual(x, y, maxDistance = 50) {
+    const baseElement = document.elementFromPoint(x, y);
+    if (baseElement) {
+      if (['IMG', 'CANVAS', 'VIDEO', 'SVG'].includes(baseElement.tagName)) {
+        return baseElement;
+      }
+      const direct = baseElement.querySelector('img, canvas, video, svg') || baseElement.closest('figure, picture, [role="img"]');
+      if (direct) {
+        return direct.querySelector ? (direct.querySelector('img, canvas, video, svg') || direct) : direct;
+      }
+    }
+
+    const visuals = document.querySelectorAll('img, canvas, video, svg');
+    let best = null;
+    let bestDistance = maxDistance;
+    let count = 0;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+
+    for (const candidate of visuals) {
+      if (count++ > 60) break;
+      const rect = candidate.getBoundingClientRect();
+      if (!rect || rect.width < 32 || rect.height < 32) continue;
+      if (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw) continue;
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dist = Math.hypot(cx - x, cy - y);
+      if (dist < bestDistance) {
+        bestDistance = dist;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
   function nearestTarget(x, y, maxDistance = 42) {
     // Check close button first if tooltip is visible
     if (tooltipCloseBtn && tooltip && tooltip.style.display === 'block') {
@@ -522,6 +557,22 @@
       }
     }
 
+    // Check if element directly under gaze is a visual/image
+    const baseElement = document.elementFromPoint(x, y);
+    if (baseElement) {
+      const directVisual = (['IMG', 'CANVAS', 'VIDEO', 'SVG'].includes(baseElement.tagName))
+        ? baseElement
+        : baseElement.closest('figure img, picture img, [role="img"]');
+      if (directVisual) {
+        const rect = directVisual.getBoundingClientRect();
+        if (rect && rect.width >= 32 && rect.height >= 32) {
+          const cx = rect.left + rect.width / 2;
+          const cy = rect.top + rect.height / 2;
+          return { element: directVisual, type: 'visual', distance: Math.hypot(cx - x, cy - y) };
+        }
+      }
+    }
+
     // Find nearest link
     const link = nearestLink(x, y, maxDistance);
     if (link) {
@@ -530,6 +581,16 @@
       const cy = rect.top + rect.height / 2;
       const dist = Math.hypot(cx - x, cy - y);
       return { element: link, type: 'link', distance: dist };
+    }
+
+    // Proximity fallback to visual element
+    const visual = nearestVisual(x, y, maxDistance);
+    if (visual) {
+      const rect = visual.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dist = Math.hypot(cx - x, cy - y);
+      return { element: visual, type: 'visual', distance: dist };
     }
 
     return null;
@@ -886,11 +947,14 @@
     }
 
     // Jitter tolerance & grace window for smooth, uninterrupted dwell accumulation
-    const isSameLink = Boolean(targetElement && dwellTarget && 
+    const isSameTarget = Boolean(targetElement && dwellTarget && 
       (targetElement === dwellTarget || 
-       (targetElement.closest && dwellTarget.closest && targetElement.closest('a') === dwellTarget.closest('a'))));
+       (targetElement.closest && dwellTarget.closest && (
+         (targetElement.closest('a') && targetElement.closest('a') === dwellTarget.closest('a')) ||
+         (targetElement.closest('figure, picture') && targetElement.closest('figure, picture') === dwellTarget.closest('figure, picture'))
+       ))));
 
-    if (isSameLink) {
+    if (isSameTarget) {
       dwellAccum += delta;
       lastDwellTargetTs = ts;
     } else if (targetElement) {
@@ -930,6 +994,11 @@
         if (currentJob) {
           currentJob = null;
         }
+      } else if (target && target.type === 'visual') {
+        // Gaze dwell triggered image explanation hands-free!
+        triggerVisualAnalysis(target.element);
+      } else if (dwellTarget && (['IMG', 'CANVAS', 'VIDEO', 'SVG'].includes(dwellTarget.tagName) || dwellTarget.closest('figure img, picture img'))) {
+        triggerVisualAnalysis(dwellTarget.tagName === 'IMG' ? dwellTarget : (dwellTarget.querySelector('img, canvas') || dwellTarget));
       } else if (dwellTarget) {
         const linkToTrigger = (target && target.type === 'link') ? target.element : (dwellTarget.closest ? dwellTarget.closest('a') : dwellTarget);
         if (linkToTrigger) {
@@ -942,6 +1011,100 @@
   function clamp(value, min, max) {
     if (!Number.isFinite(value)) return min;
     return Math.max(min, Math.min(max, value));
+  }
+
+  async function triggerVisualAnalysis(visualEl) {
+    if (!visualEl) return;
+    const src = visualEl.currentSrc || visualEl.src || '';
+    const alt = visualEl.alt || visualEl.getAttribute('aria-label') || visualEl.title || '';
+
+    // Avoid re-triggering while same visual is actively running
+    if (currentJob && currentJob.type === 'visual' && currentJob.element === visualEl && (Date.now() - currentJob.startedAt < 8000)) {
+      return;
+    }
+
+    cancelActiveJob('new_visual_analysis');
+    requestSeq += 1;
+    const requestId = requestSeq;
+
+    currentJob = {
+      id: requestId,
+      url: src || window.location.href,
+      element: visualEl,
+      type: 'visual',
+      startedAt: Date.now()
+    };
+
+    const loadingHtml = `
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 4px;">
+        <span style="font-size:18px;">✦</span>
+        <div>
+          <div style="font-size:12.5px;font-weight:700;color:#18181B;">Analyzing Visual with Gemma 4 Vision...</div>
+          <div style="font-size:11px;color:#71717A;">${escapeHtml(alt || 'Inspecting visual composition, text, and context')}</div>
+        </div>
+      </div>
+    `;
+    showTooltipForLink(visualEl, loadingHtml);
+    beep(580, 100);
+
+    let dataUrl = null;
+    try {
+      if (visualEl.tagName === 'CANVAS') {
+        dataUrl = visualEl.toDataURL('image/jpeg', 0.85);
+      } else if (visualEl.tagName === 'IMG' && visualEl.complete && visualEl.naturalWidth > 0) {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.min(800, visualEl.naturalWidth);
+        canvas.height = Math.round((canvas.width / visualEl.naturalWidth) * visualEl.naturalHeight);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(visualEl, 0, 0, canvas.width, canvas.height);
+        dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      }
+    } catch (_) {
+      dataUrl = null;
+    }
+
+    try {
+      const response = await sendMessagePromise({
+        type: 'ANALYZE_IMAGE_MULTIMODAL',
+        dataUrl,
+        src,
+        alt,
+        title: document.title || 'Visual on page',
+        url: window.location.href
+      });
+
+      if (!currentJob || currentJob.id !== requestId) return;
+
+      if (response && response.status === 'complete' && response.summary) {
+        const thumbHtml = dataUrl || (src && !src.startsWith('chrome') ? src : '');
+        const formatted = formatAISummary(response.summary);
+        const headerBadge = `
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #E4E4E7;">
+            <span style="font-size:11px;font-weight:800;color:#7C5CFF;text-transform:uppercase;letter-spacing:0.5px;">👁️ Gemma 4 Multimodal Vision</span>
+            <span style="font-size:10px;font-weight:700;background:#EDE9FE;color:#6D28D9;padding:2px 6px;border-radius:4px;">Hands-Free</span>
+          </div>
+        `;
+        showTooltipForLink(visualEl, headerBadge + formatted);
+        beep(720, 140);
+
+        try {
+          chrome.runtime.sendMessage({
+            type: 'IMAGE_ANALYSIS_UPDATE',
+            summary: response.summary,
+            thumb: thumbHtml,
+            label: alt || 'Focused visual',
+            url: src || window.location.href
+          });
+        } catch (_) {}
+      } else {
+        const err = response?.error || 'Multimodal vision analysis could not be completed.';
+        renderError(err);
+      }
+    } catch (error) {
+      if (currentJob && currentJob.id === requestId) {
+        renderError(error?.message || 'Failed to explain image.');
+      }
+    }
   }
 
   function triggerSummary(link) {
@@ -1300,6 +1463,20 @@
 
   // Mouth open & close click: trigger click on magnetically snapped target, video player, link, or element under cursor
   window.addEventListener('smile:click', (event) => {
+    // 0. If gaze is directly on an image or visual element, mouth-open triggers Gemma 4 Vision instantly!
+    const elAtPoint = document.elementFromPoint(lastPointerX, lastPointerY);
+    if (elAtPoint) {
+      const visualEl = (['IMG', 'CANVAS', 'VIDEO', 'SVG'].includes(elAtPoint.tagName)) 
+        ? elAtPoint 
+        : elAtPoint.closest('figure img, picture img, [role="img"]');
+      if (visualEl) {
+        triggerVisualAnalysis(visualEl.tagName === 'IMG' ? visualEl : (visualEl.querySelector('img, canvas') || visualEl));
+        beep(680, 120);
+        console.debug(`[GazeDwell] 👄 Mouth open triggered Gemma 4 image explanation hands-free on:`, visualEl);
+        return;
+      }
+    }
+
     // 1. Magnetically locked target (if magnet snapping active)
     let target = null;
     if (window.GlanceMagnet && window.GlanceMagnet.getLockedTarget()) {

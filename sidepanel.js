@@ -378,6 +378,41 @@ function setupEventListeners() {
     elements.explainImageBtn.addEventListener('click', handleExplainFocusedImage);
   }
 
+  // Frictionless hands-free dwell trigger for Side Panel action buttons (zero clicks needed)
+  function enableHandsFreeButtonDwell(btn, onTrigger) {
+    if (!btn) return;
+    let dwellTimer = null;
+
+    btn.addEventListener('mouseenter', () => {
+      btn.style.transition = 'transform 0.15s, box-shadow 0.15s, outline 0.15s';
+      btn.style.outline = '3px solid #7C5CFF';
+      btn.style.outlineOffset = '2px';
+
+      dwellTimer = setTimeout(() => {
+        btn.style.outline = '3px solid #10B981';
+        btn.animate([
+          { transform: 'scale(1)' },
+          { transform: 'scale(0.96)' },
+          { transform: 'scale(1)' }
+        ], { duration: 200 });
+        onTrigger();
+        showGloMessage("⚡ Triggered hands-free via dwell!");
+      }, 500); // 500ms hover dwell triggers hands-free
+    });
+
+    btn.addEventListener('mouseleave', () => {
+      if (dwellTimer) {
+        clearTimeout(dwellTimer);
+        dwellTimer = null;
+      }
+      btn.style.outline = '';
+      btn.style.outlineOffset = '';
+    });
+  }
+
+  enableHandsFreeButtonDwell(elements.explainImageBtn, handleExplainFocusedImage);
+  enableHandsFreeButtonDwell(elements.summarizePageBtn, handleSummarizeActivePage);
+
   // Calibrate & Re-Center Quick Buttons
   if (elements.calibrateHeadQuickBtn) {
     elements.calibrateHeadQuickBtn.addEventListener('click', triggerHeadCalibration);
@@ -846,6 +881,24 @@ chrome.runtime.onMessage.addListener((message) => {
     if (elements.contentArea) elements.contentArea.classList.remove('hidden');
     if (elements.summaryTitle) elements.summaryTitle.textContent = message.title || 'Summary';
     renderSummaryText(message.summary || '');
+  }
+
+  if (message.type === 'IMAGE_ANALYSIS_UPDATE') {
+    if (elements.contentArea) elements.contentArea.classList.remove('hidden');
+    if (elements.summaryTitle) elements.summaryTitle.textContent = "👁️ Multimodal Visual Analysis";
+    let thumbHtml = message.thumb || '';
+    let renderedHtml = '';
+    if (thumbHtml) {
+      renderedHtml += `
+        <div style="margin-bottom:12px;text-align:center;">
+          <img src="${thumbHtml}" style="max-height:130px;max-width:100%;border-radius:8px;border:2px solid #171717;box-shadow:2px 2px 0 #171717;object-fit:contain;" />
+          <div style="font-size:11px;color:#71717A;margin-top:4px;font-weight:700;">Target: ${message.label || 'Visual asset'}</div>
+        </div>
+      `;
+    }
+    renderedHtml += parseMarkdownSimple(message.summary || '');
+    if (elements.aiSummary) elements.aiSummary.innerHTML = renderedHtml;
+    showGloMessage("🎉 Image explained hands-free with Gemma 4 ✦");
   }
 
   if (message.type === 'GAZE_STATUS') {
