@@ -10,26 +10,27 @@
   const HUMAN_MODULE_PATH = 'gaze/human/human.esm.js';
   const HUMAN_MODELS_DIR = 'gaze/human/models/';
   const POINT_THROTTLE_MS = 16;           // ~60fps smooth dispatch
-  const HEAD_FILTER_MIN_CUTOFF = 0.35;    // Stronger noise elimination when head is still
-  const HEAD_FILTER_BETA = 0.005;         // Zero-lag velocity tracking when head moves
+  const HEAD_FILTER_MIN_CUTOFF = 0.50;    // Steadier resting cursor (filters involuntary tremors)
+  const HEAD_FILTER_BETA = 0.005;         // Controlled, gentle velocity ramp without twitching
   const HEAD_FILTER_D_CUTOFF = 1.0;
-  const HEAD_POINTER_LERP = 0.32;         // Fast default follow (up from 0.12)
+  const HEAD_POINTER_LERP = 0.28;         // Silky, deliberate follow rate
   const HEAD_TRANSLATION_GAIN = 1;
-  const HEAD_ROTATION_INFLUENCE = 0.22;
-  const HEAD_ROTATION_EDGE_GAIN = 0.35;
+  const HEAD_ROTATION_INFLUENCE = 0.28;   // Natural 28% rotation fusion
+  const HEAD_ROTATION_EDGE_GAIN = 0.15;
   const HEAD_CENTER_THRESHOLD = 0.25;
-  const HEAD_EDGE_THRESHOLD = 0.7;
-  const HEAD_CENTER_LERP = 0.22;          // Smooth yet responsive (up from 0.06)
-  const HEAD_EDGE_LERP = 0.42;            // Fast edge responsiveness (up from 0.10)
+  const HEAD_EDGE_THRESHOLD = 0.75;
+  const HEAD_CENTER_LERP = 0.28;
+  const HEAD_EDGE_LERP = 0.32;
   const PITCH_FALLBACK_THRESHOLD = 0.32;
   const TRANSLATION_MIN_RATIO = 0.24;
-  const VERTICAL_EDGE_SCALE = 1.35;
-  const HEAD_YAW_SCALE = 25;
-  const HEAD_PITCH_SCALE = 20;
+  const VERTICAL_EDGE_SCALE = 1.05;
+  const HEAD_YAW_SCALE = 42;              // Wider range for slower, more deliberate horizontal speed
+  const HEAD_PITCH_SCALE = 32;            // Wider range for slower, more deliberate vertical speed
   const BLINK_LEFT_THRESHOLD_MS = 1000;
   const BLINK_RIGHT_THRESHOLD_MS = 2000;
   const MOUTH_CALIBRATION_SAMPLES = 30;   // Samples to collect for mouth calibration
-  const MOUTH_OPEN_COOLDOWN_MS = 800;     // Prevent multiple clicks from sustained open mouth
+  const MOUTH_OPEN_COOLDOWN_MS = 550;     // Crisp cooldown (down from 800ms) for responsive clicking
+  const DEFAULT_MOUTH_THRESHOLD = 0.32;   // Reliable default mouth aspect ratio threshold
   const BLINK_RELEASE_EVENT = 'blink:released';
   const EAR_OPEN_SAMPLES_REQUIRED = 60;
   const EAR_CLOSED_COLLECTION_MS = 700;
@@ -37,16 +38,17 @@
   const DEFAULT_HEAD_CAL = {
     cx: 0,
     cy: 0,
-    left: 0.4,
-    right: 0.4,
-    up: 0.3,
-    down: 0.35,
+    left: 0.40,
+    right: 0.40,
+    up: 0.32,
+    down: 0.34,
     version: 2,
     ts: 0
   };
   const HEAD_MIRROR_X = -1;
   const HEAD_MIRROR_Y = 1;
-  const AUTO_CENTER_ALPHA = 0.05;
+  const AUTO_CENTER_ALPHA = 0.0003;       // Imperceptible background drift correction only when resting
+  let headSpeedMultiplier = 0.78;         // Calmer, slightly slower default movement
 
   let human = null;
   let video = null;
@@ -77,11 +79,26 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
   let blinkClosedAt = null;
   let blinkHoldEmitted = false;
   let previewFrameCount = 0;
+  let mouthGestureState = 'CLOSED';      // 'CLOSED', 'OPEN'
+  let mouthOpenStart = 0;                // Timestamp when mouth opened
+  let mouthBaselineMAR = 0.28;           // Dynamically tracks resting mouth ratio
+  let mouthClickCooldownUntil = 0;       // Cooldown lockout after click
   let lastMouthClickTime = 0;            // Track last mouth-open click for cooldown
   let lastMouthRatio = 0;                // Track mouth aspect ratio for debugging
   let mouthCalibration = null;           // Stores { closedRatio, openRatio, threshold }
-  let mouthCalSamples = [];              // Temporary calibration samples
-  let mouthClickEnabled = false;         // Whether mouth clicking is enabled
+  let mouthClickEnabled = true;          // Whether mouth clicking is enabled (default enabled)
+
+  // Asymmetric Eye Wink Video Seeking (Left: -10s, Right: +10s)
+  let winkSeekEnabled = true;
+  let runningOpenL = 0.28;
+  let runningOpenR = 0.28;
+  let leftWinkStart = null;
+  let rightWinkStart = null;
+  let winkCooldownUntil = 0;
+  let bilateralBlinkGuardUntil = 0;
+  let winkFrameCount = 0;
+  const WINK_HOLD_DURATION_MS = 220; // Hold deliberate wink for ~220ms
+  const WINK_COOLDOWN_MS = 1200;     // 1200ms cooldown prevents rapid multi-skipping
 
   let gazeEnabled = false;
   if (typeof window.__gazeHeadMode !== 'boolean') {
@@ -96,6 +113,19 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
 
   window.addEventListener('gaze:preview-toggle', (event) => {
     previewOn = Boolean(event && event.detail && event.detail.on);
+  });
+
+  window.addEventListener('gaze:recenter', () => {
+    if (window.__lastHeadFrame && Number.isFinite(window.__lastHeadFrame.nx)) {
+      headAutoCenter = { nx: window.__lastHeadFrame.nx, ny: window.__lastHeadFrame.ny, ready: true };
+      if (headCal) {
+        headCal.cx = window.__lastHeadFrame.nx;
+        headCal.cy = window.__lastHeadFrame.ny;
+        storageSet({ [HEAD_CAL_STORAGE_KEY]: headCal });
+      }
+      console.log('[GazeCore] 🎯 Face tracking re-centered to:', headAutoCenter);
+      dispatchStatus('live', 'Face Re-centered');
+    }
   });
 
   function computeAlpha(fc, dtSeconds) {
@@ -278,72 +308,35 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
   // Calculate mouth aspect ratio (MAR) for mouth-open detection
   // Returns ratio of mouth height to width (higher = more open)
   function calculateMouthRatio(annotations) {
-    if (!annotations) {
-      if (!window.__mouthDebug1) {
-        console.warn('[GazeCore] No annotations for mouth detection');
-        window.__mouthDebug1 = true;
-      }
-      return 0;
-    }
+    if (!annotations) return 0;
 
-    if (!annotations.lipsUpperOuter || !annotations.lipsLowerOuter) {
-      if (!window.__mouthDebug2) {
-        console.warn('[GazeCore] No lip landmarks. Available:', Object.keys(annotations));
-        window.__mouthDebug2 = true;
-      }
-      return 0;
-    }
-
-    // Get lip landmarks
     const upperLip = annotations.lipsUpperOuter;
     const lowerLip = annotations.lipsLowerOuter;
+    if (!upperLip || !lowerLip || upperLip.length === 0 || lowerLip.length === 0) return 0;
 
-    // Debug log once
-    if (!window.__mouthDebug3) {
-      console.log('[GazeCore] Lip landmarks found!', {
-        upperLipLength: upperLip.length,
-        lowerLipLength: lowerLip.length,
-        upperSample: upperLip[5],
-        lowerSample: lowerLip[5]
-      });
-      window.__mouthDebug3 = true;
-    }
+    // Center vertical distance: sample middle points
+    const uMid = Math.floor(upperLip.length / 2);
+    const lMid = Math.floor(lowerLip.length / 2);
+    let mouthHeight = Math.abs(lowerLip[lMid][1] - upperLip[uMid][1]);
 
-    // Calculate vertical mouth opening (height)
-    // Use points: top center and bottom center (middle of arrays)
-    const topPoint = upperLip[Math.floor(upperLip.length / 2)];
-    const bottomPoint = lowerLip[Math.floor(lowerLip.length / 2)];
-
-    if (!topPoint || !bottomPoint) {
-      if (!window.__mouthDebug4) {
-        console.warn('[GazeCore] Missing center lip points');
-        window.__mouthDebug4 = true;
+    // Check inner lips if available (inner lip separation is highly sensitive to mouth opening)
+    if (annotations.lipsUpperInner && annotations.lipsLowerInner) {
+      const uIn = annotations.lipsUpperInner;
+      const lIn = annotations.lipsLowerInner;
+      if (uIn.length > 0 && lIn.length > 0) {
+        const innerH = Math.abs(lIn[Math.floor(lIn.length / 2)][1] - uIn[Math.floor(uIn.length / 2)][1]);
+        mouthHeight = Math.max(mouthHeight, innerH * 1.35);
       }
-      return 0;
     }
 
-    const mouthHeight = Math.abs(bottomPoint[1] - topPoint[1]);
-
-    // Calculate horizontal mouth width
-    // Use points: left corner (first) and right corner (last)
     const leftPoint = upperLip[0];
     const rightPoint = upperLip[upperLip.length - 1];
+    if (!leftPoint || !rightPoint) return 0;
 
-    if (!leftPoint || !rightPoint) {
-      if (!window.__mouthDebug5) {
-        console.warn('[GazeCore] Missing corner lip points');
-        window.__mouthDebug5 = true;
-      }
-      return 0;
-    }
-
-    const mouthWidth = Math.abs(rightPoint[0] - leftPoint[0]);
-
+    const mouthWidth = Math.hypot(rightPoint[0] - leftPoint[0], rightPoint[1] - leftPoint[1]);
     if (mouthWidth === 0) return 0;
 
-    // Mouth Aspect Ratio (MAR)
-    const mar = mouthHeight / mouthWidth;
-    return mar;
+    return mouthHeight / mouthWidth;
   }
 
   function computeHeadFrame(face) {
@@ -416,22 +409,54 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
     return Math.hypot(a[0] - b[0], a[1] - b[1]);
   }
 
-  function leftEAR(mesh) {
-    const top = pick(mesh, 159);
-    const bottom = pick(mesh, 145);
-    const leftCorner = pick(mesh, 33);
-    const rightCorner = pick(mesh, 133);
+  // Physical Left Eye: Landmarks 386 (top), 374 (bottom), 362 (inner), 263 (outer)
+  function leftEAR(mesh, annotations) {
+    if (annotations && annotations.leftEyeUpper0 && annotations.leftEyeLower0) {
+      const u = annotations.leftEyeUpper0;
+      const l = annotations.leftEyeLower0;
+      if (u.length && l.length) {
+        const top = u[Math.floor(u.length / 2)];
+        const bottom = l[Math.floor(l.length / 2)];
+        const leftCorner = l[0];
+        const rightCorner = l[l.length - 1];
+        if (top && bottom && leftCorner && rightCorner) {
+          const v = distancePoint(top, bottom);
+          const h = Math.max(1, distancePoint(leftCorner, rightCorner));
+          return v / h;
+        }
+      }
+    }
+    const top = pick(mesh, 386);
+    const bottom = pick(mesh, 374);
+    const leftCorner = pick(mesh, 362);
+    const rightCorner = pick(mesh, 263);
     if (!top || !bottom || !leftCorner || !rightCorner) return NaN;
     const vertical = distancePoint(top, bottom);
     const horizontal = Math.max(1, distancePoint(leftCorner, rightCorner));
     return vertical / horizontal;
   }
 
-  function rightEAR(mesh) {
-    const top = pick(mesh, 386);
-    const bottom = pick(mesh, 374);
-    const leftCorner = pick(mesh, 362);
-    const rightCorner = pick(mesh, 263);
+  // Physical Right Eye: Landmarks 159 (top), 145 (bottom), 33 (outer), 133 (inner)
+  function rightEAR(mesh, annotations) {
+    if (annotations && annotations.rightEyeUpper0 && annotations.rightEyeLower0) {
+      const u = annotations.rightEyeUpper0;
+      const l = annotations.rightEyeLower0;
+      if (u.length && l.length) {
+        const top = u[Math.floor(u.length / 2)];
+        const bottom = l[Math.floor(l.length / 2)];
+        const leftCorner = l[0];
+        const rightCorner = l[l.length - 1];
+        if (top && bottom && leftCorner && rightCorner) {
+          const v = distancePoint(top, bottom);
+          const h = Math.max(1, distancePoint(leftCorner, rightCorner));
+          return v / h;
+        }
+      }
+    }
+    const top = pick(mesh, 159);
+    const bottom = pick(mesh, 145);
+    const leftCorner = pick(mesh, 33);
+    const rightCorner = pick(mesh, 133);
     if (!top || !bottom || !leftCorner || !rightCorner) return NaN;
     const vertical = distancePoint(top, bottom);
     const horizontal = Math.max(1, distancePoint(leftCorner, rightCorner));
@@ -582,6 +607,114 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
     }
   }
 
+  let leftWinkFired = false;
+  let rightWinkFired = false;
+
+  function updateWinkState(mesh, annotations, ts) {
+    if (!winkSeekEnabled || window.__gazeHeadCalActive || window.__gazeMouthCalActive) {
+      return;
+    }
+    const left = leftEAR(mesh, annotations);
+    const right = rightEAR(mesh, annotations);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+      return;
+    }
+
+    winkFrameCount++;
+
+    // Track baseline open EAR when eyes are open and relaxed
+    if (left > 0.20 && right > 0.20) {
+      runningOpenL = runningOpenL * 0.95 + left * 0.05;
+      runningOpenR = runningOpenR * 0.95 + right * 0.05;
+    }
+
+    // 1. Bilateral blink detection:
+    // If BOTH eyes are below open threshold or average EAR indicates eye closure,
+    // this is a normal human blink, NOT a wink.
+    const isBilateralBlink = (left < 0.19 && right < 0.19) || ((left + right) / 2 < 0.185);
+    if (isBilateralBlink) {
+      leftWinkStart = null;
+      rightWinkStart = null;
+      leftWinkFired = false;
+      rightWinkFired = false;
+      // 500ms post-blink guard so eyelid reopening phase never triggers false winks
+      bilateralBlinkGuardUntil = ts + 500;
+      window.__lastEyeEAR = { left, right, isLeftWink: false, isRightWink: false, status: 'BLINK' };
+      return;
+    }
+
+    // 2. Post-blink guard or active wink cooldown lockout:
+    if (ts < bilateralBlinkGuardUntil || ts < winkCooldownUntil) {
+      leftWinkStart = null;
+      rightWinkStart = null;
+      leftWinkFired = false;
+      rightWinkFired = false;
+      window.__lastEyeEAR = { left, right, isLeftWink: false, isRightWink: false, status: 'COOLDOWN' };
+      return;
+    }
+
+    // 3. Clear, unambiguous Wink Asymmetry:
+    // One eye must be firmly closed (< 0.155) while the opposite eye remains wide open (>= 0.22)
+    // with a prominent difference of at least 0.08.
+    const isLeftWink = (left < 0.155) && (right >= 0.22) && (right - left >= 0.08);
+    const isRightWink = (right < 0.155) && (left >= 0.22) && (left - right >= 0.08);
+
+    // Left Wink Processing (-10s rewind)
+    if (isLeftWink) {
+      rightWinkStart = null;
+      rightWinkFired = false;
+      if (leftWinkStart === null) {
+        leftWinkStart = ts;
+        leftWinkFired = false;
+      } else if (!leftWinkFired && (ts - leftWinkStart >= 220)) {
+        triggerWink('left', -10, ts);
+        leftWinkFired = true;
+        winkCooldownUntil = ts + 1200;
+        leftWinkStart = null;
+      }
+    } else {
+      leftWinkStart = null;
+      leftWinkFired = false;
+    }
+
+    // Right Wink Processing (+10s forward)
+    if (isRightWink) {
+      leftWinkStart = null;
+      leftWinkFired = false;
+      if (rightWinkStart === null) {
+        rightWinkStart = ts;
+        rightWinkFired = false;
+      } else if (!rightWinkFired && (ts - rightWinkStart >= 220)) {
+        triggerWink('right', 10, ts);
+        rightWinkFired = true;
+        winkCooldownUntil = ts + 1200;
+        rightWinkStart = null;
+      }
+    } else {
+      rightWinkStart = null;
+      rightWinkFired = false;
+    }
+
+    window.__lastEyeEAR = {
+      left,
+      right,
+      isLeftWink,
+      isRightWink,
+      status: isLeftWink ? 'WINK_LEFT' : isRightWink ? 'WINK_RIGHT' : 'OPEN'
+    };
+
+    if (winkFrameCount % 30 === 0) {
+      console.log(`[GazeCore] Eyes: Left=${left.toFixed(3)}, Right=${right.toFixed(3)} | Status=${window.__lastEyeEAR.status}`);
+    }
+  }
+
+  function triggerWink(direction, seconds, ts) {
+    console.log(`[GazeCore] 👁️ WINK ${direction.toUpperCase()} -> ${seconds > 0 ? '+' : ''}${seconds}s`);
+    window.dispatchEvent(new CustomEvent('video:seek', {
+      detail: { direction, seconds, ts }
+    }));
+  }
+
   function dispatchStatus(nextPhase, note) {
     phase = nextPhase;
     window.dispatchEvent(new CustomEvent(STATUS_EVENT, {
@@ -663,6 +796,12 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
           enabled: false
         }
       });
+
+      if (human.tf && typeof human.tf.env === 'function') {
+        try {
+          human.tf.env().set('WEBGL_DELETE_TEXTURE_THRESHOLD', 0);
+        } catch (e) {}
+      }
 
       try {
         await human.load();
@@ -913,41 +1052,74 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
       window.__lastHeadFrame = { nx: 0, ny: 0, yawDeg, pitchDeg };
     }
 
-    // Blink detection disabled - was causing issues and not accurate enough
-    // if (Array.isArray(face.mesh)) {
-    //   if (!earCal) {
-    //     ensureEarCalibration(face.mesh, ts);
-    //   } else {
-    //     updateBlinkState(face.mesh, ts);
-    //   }
-    // }
+    // Asymmetric Eye Wink Video Control (Left Wink: -10s | Right Wink: +10s)
+    if (Array.isArray(face.mesh)) {
+      updateWinkState(face.mesh, face.annotations, ts);
+    }
 
-    // Mouth-open detection for click (more reliable than emotion detection)
+    // Mouth open & close gesture detection for click
     if (face.annotations && !window.__gazeHeadCalActive) {
       const mouthRatio = calculateMouthRatio(face.annotations);
       lastMouthRatio = mouthRatio;
       window.__lastMouthRatio = mouthRatio;  // Store globally for preview display and calibration
 
-      // Only detect clicks if calibrated, enabled, and NOT calibrating
-      if (mouthCalibration && mouthClickEnabled && !window.__gazeMouthCalActive) {
-        const threshold = mouthCalibration.threshold;
+      if (mouthClickEnabled && !window.__gazeMouthCalActive) {
+        // Adapt resting baseline smoothly when mouth is closed
+        if (mouthGestureState === 'CLOSED' && mouthRatio > 0.12 && mouthRatio < 0.45) {
+          mouthBaselineMAR = mouthBaselineMAR * 0.96 + mouthRatio * 0.04;
+        }
 
-        // Debug log mouth ratio - log every 100 frames to see patterns
+        // Determine open and close thresholds
+        let openThreshold = Math.max(0.42, mouthBaselineMAR + 0.12);
+        let closeThreshold = mouthBaselineMAR + 0.06;
+
+        if (mouthCalibration && typeof mouthCalibration.threshold === 'number') {
+          const closed = mouthCalibration.closedRatio || mouthBaselineMAR;
+          const open = mouthCalibration.openRatio || (closed + 0.20);
+          openThreshold = closed + (open - closed) * 0.50;
+          closeThreshold = closed + (open - closed) * 0.25;
+        }
+
         if (!window.__mouthFrameCount) window.__mouthFrameCount = 0;
         window.__mouthFrameCount++;
-        if (window.__mouthFrameCount % 100 === 0) {
-          console.log(`[GazeCore] Mouth stats: MAR=${mouthRatio.toFixed(3)}, threshold=${threshold.toFixed(3)}, calibration=`, mouthCalibration);
+        if (window.__mouthFrameCount % 60 === 0) {
+          console.log(`[GazeCore] Mouth: MAR=${mouthRatio.toFixed(3)}, baseline=${mouthBaselineMAR.toFixed(3)}, openTh=${openThreshold.toFixed(3)}, closeTh=${closeThreshold.toFixed(3)}, state=${mouthGestureState}`);
         }
 
-        // Mouth open detected: ratio above calibrated threshold and cooldown period passed
-        if (mouthRatio > threshold && (ts - lastMouthClickTime) > MOUTH_OPEN_COOLDOWN_MS) {
-          lastMouthClickTime = ts;
-          window.dispatchEvent(new CustomEvent('smile:click', {
-            detail: { mouthRatio, ts }
-          }));
-          console.log(`[GazeCore] 👄 MOUTH OPEN CLICK! MAR: ${mouthRatio.toFixed(3)} > ${threshold.toFixed(3)}`);
+        // 1. Mouth Opening Detection
+        if (mouthGestureState === 'CLOSED') {
+          if (mouthRatio >= openThreshold && ts > mouthClickCooldownUntil) {
+            mouthGestureState = 'OPEN';
+            mouthOpenStart = ts;
+            window.dispatchEvent(new CustomEvent('mouth:opened', { detail: { ts, mouthRatio } }));
+          }
+        } 
+        // 2. Mouth Closing Detection -> Triggers exactly ONE click
+        else if (mouthGestureState === 'OPEN') {
+          const openDuration = ts - mouthOpenStart;
+
+          // Discard if held open too long (> 1600ms = yawning / speaking)
+          if (openDuration > 1600) {
+            mouthGestureState = 'CLOSED';
+            mouthClickCooldownUntil = ts + 400;
+          } else if (mouthRatio <= closeThreshold) {
+            // Must have been open for at least 100ms
+            if (openDuration >= 100) {
+              window.dispatchEvent(new CustomEvent('smile:click', {
+                detail: { mouthRatio, duration: openDuration, ts }
+              }));
+              console.log(`[GazeCore] 👄 MOUTH OPEN & CLOSE CLICK! Held ${openDuration.toFixed(0)}ms`);
+              mouthClickCooldownUntil = ts + 750; // Prevent accidental immediate repeat
+            }
+            mouthGestureState = 'CLOSED';
+          }
         }
       }
+    }
+
+    // Evaluate open modular gesture & action plugins
+    if (window.GlanceSDK && typeof window.GlanceSDK.evaluateFrame === 'function') {
+      window.GlanceSDK.evaluateFrame(face, window.__lastHeadFrame, ts);
     }
 
     if (!probePrinted) {
@@ -978,8 +1150,12 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
           if (!headAutoCenter.ready) {
             headAutoCenter = { nx: headFrame.nx, ny: headFrame.ny, ready: true };
           } else {
-            headAutoCenter.nx += (headFrame.nx - headAutoCenter.nx) * AUTO_CENTER_ALPHA;
-            headAutoCenter.ny += (headFrame.ny - headAutoCenter.ny) * AUTO_CENTER_ALPHA;
+            // Only imperceptibly adapt center if user is essentially still and near center
+            const distFromCenter = Math.hypot(headFrame.nx - headAutoCenter.nx, headFrame.ny - headAutoCenter.ny);
+            if (distFromCenter < 0.05) {
+              headAutoCenter.nx += (headFrame.nx - headAutoCenter.nx) * AUTO_CENTER_ALPHA;
+              headAutoCenter.ny += (headFrame.ny - headAutoCenter.ny) * AUTO_CENTER_ALPHA;
+            }
           }
           activeCal = {
             ...DEFAULT_HEAD_CAL,
@@ -987,75 +1163,92 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
             cy: headAutoCenter.ny
           };
         }
-        const yawNorm = Math.max(-1, Math.min(1, yawDeg / HEAD_YAW_SCALE));
-        const pitchNorm = Math.max(-1, Math.min(1, pitchDeg / HEAD_PITCH_SCALE));
-        const centerNx = activeCal.cx || 0;
-        const centerNy = activeCal.cy || 0;
-        const leftRange = Math.max(1e-3, activeCal.left || 0.01);
-        const rightRange = Math.max(1e-3, activeCal.right || 0.01);
-        const upRange = Math.max(1e-3, activeCal.up || 0.01);
-        const downRange = Math.max(1e-3, activeCal.down || 0.01);
+
+        const centerNx = Number.isFinite(activeCal.cx) ? activeCal.cx : 0;
+        const centerNy = Number.isFinite(activeCal.cy) ? activeCal.cy : 0;
+        const leftRange = Math.max(1e-3, activeCal.left || 0.40);
+        const rightRange = Math.max(1e-3, activeCal.right || 0.40);
+        const upRange = Math.max(1e-3, activeCal.up || 0.32);
+        const downRange = Math.max(1e-3, activeCal.down || 0.34);
 
         const offsetNx = headFrame.nx - centerNx;
         const offsetNy = headFrame.ny - centerNy;
 
-        let normX = offsetNx < 0 ? offsetNx / leftRange : offsetNx / rightRange;
-        const normYTrans = offsetNy < 0 ? offsetNy / upRange : offsetNy / downRange;
-        let normY = (pitchDeg / HEAD_PITCH_SCALE) + normYTrans * 0.35;
+        // Linear normalized displacement from -1 (left/top) to +1 (right/bottom)
+        const poseX = offsetNx < 0 ? (offsetNx / leftRange) : (offsetNx / rightRange);
+        const poseY = offsetNy < 0 ? (offsetNy / upRange) : (offsetNy / downRange);
 
-        const translationRatioX = Math.abs(offsetNx) / (offsetNx < 0 ? leftRange : rightRange);
-        const translationRatioY = Math.abs(offsetNy) / (offsetNy < 0 ? upRange : downRange);
+        // 3D rotation angles normalized
+        const rotX = yawDeg / HEAD_YAW_SCALE;
+        const rotY = pitchDeg / HEAD_PITCH_SCALE;
 
-        if (Math.abs(normX) < 1) {
-          normX += yawNorm * HEAD_ROTATION_INFLUENCE * (1 - Math.min(1, Math.abs(normX)));
-        }
-        if (Math.abs(normY) < 1) {
-          normY += pitchNorm * (HEAD_ROTATION_INFLUENCE * 0.6) * (1 - Math.min(1, Math.abs(normY)));
-        }
+        // Balanced sensor fusion: 72% facial pose displacement + 28% head rotation
+        let normX = poseX * 0.72 + rotX * 0.28;
+        let normY = poseY * 0.68 + rotY * 0.32;
 
-        if (Math.abs(normY) > HEAD_EDGE_THRESHOLD && translationRatioY < TRANSLATION_MIN_RATIO && Math.abs(pitchNorm) > PITCH_FALLBACK_THRESHOLD) {
-          const edgeBlend = HEAD_ROTATION_EDGE_GAIN * Math.sign(pitchNorm);
-          normY = Math.max(-1.4, Math.min(1.4, normY + edgeBlend));
-        }
+        // Apply speed multiplier (calm, slower movement)
+        normX *= headSpeedMultiplier;
+        normY *= headSpeedMultiplier;
 
-        normX = Math.max(-1.2, Math.min(1.2, normX));
-        normY = Math.max(-1.4, Math.min(1.4, normY));
+        // Precision power curve: smooths micro-adjustments for effortless button targeting
+        const signX = normX < 0 ? -1 : 1;
+        const signY = normY < 0 ? -1 : 1;
+        normX = signX * Math.pow(Math.abs(normX), 1.15);
+        normY = signY * Math.pow(Math.abs(normY), 1.15);
 
-        const scaledUpRange = upRange * (normY < 0 ? VERTICAL_EDGE_SCALE : 1);
-        const scaledDownRange = downRange * (normY > 0 ? VERTICAL_EDGE_SCALE : 1);
+        // Natural overscan allows reaching extreme corners smoothly without neck strain
+        normX = Math.max(-1.08, Math.min(1.08, normX));
+        normY = Math.max(-1.08, Math.min(1.08, normY));
 
-        const targetNx = normX < 0 ? centerNx + normX * leftRange : centerNx + normX * rightRange;
-        const targetNy = normY < 0 ? centerNy + normY * scaledUpRange : centerNy + normY * scaledDownRange;
-        const mapped = mapHeadLocalToXY(targetNx, targetNy, activeCal);
-        if (mapped) {
-          const filteredX = headFilterX(mapped[0], ts);
-          const filteredY = headFilterY(mapped[1], ts);
-          let finalX = Number.isFinite(filteredX) ? filteredX : mapped[0];
-          let finalY = Number.isFinite(filteredY) ? filteredY : mapped[1];
+        const viewportWidth = Math.max(1, window.innerWidth || 1);
+        const viewportHeight = Math.max(1, window.innerHeight || 1);
 
-          if (lastHeadPoint) {
-            const dist = Math.hypot(finalX - lastHeadPoint[0], finalY - lastHeadPoint[1]);
-            // Stationary Noise Gate: suppress tiny sensor noise (< 2.8px) when resting
-            if (dist < 2.8) {
-              finalX = lastHeadPoint[0];
-              finalY = lastHeadPoint[1];
-            } else {
-              // Direct 1-to-1 tracking with zero artificial lag!
-              lastHeadPoint[0] = finalX;
-              lastHeadPoint[1] = finalY;
-            }
+        const rawScreenX = (0.5 + 0.5 * normX) * viewportWidth;
+        const rawScreenY = (0.5 + 0.5 * normY) * viewportHeight;
+
+        const filteredX = headFilterX(rawScreenX, ts);
+        const filteredY = headFilterY(rawScreenY, ts);
+        let finalX = Number.isFinite(filteredX) ? filteredX : rawScreenX;
+        let finalY = Number.isFinite(filteredY) ? filteredY : rawScreenY;
+
+        if (lastHeadPoint) {
+          const dist = Math.hypot(finalX - lastHeadPoint[0], finalY - lastHeadPoint[1]);
+          // Deadband for stationary camera sensor noise (2.0px)
+          if (dist < 2.0) {
+            finalX = lastHeadPoint[0];
+            finalY = lastHeadPoint[1];
           } else {
-            lastHeadPoint = [finalX, finalY];
+            // Adaptive silky follow damping: slower/calmer when hovering near elements,
+            // responsive when intentionally panning across screen
+            const followRate = dist < 25 ? 0.22 : (dist < 80 ? 0.30 : 0.38);
+            finalX = lastHeadPoint[0] + (finalX - lastHeadPoint[0]) * followRate;
+            finalY = lastHeadPoint[1] + (finalY - lastHeadPoint[1]) * followRate;
+            lastHeadPoint[0] = finalX;
+            lastHeadPoint[1] = finalY;
           }
+        } else {
+          lastHeadPoint = [finalX, finalY];
+        }
+
+        // Clamp to viewport bounds
+        finalX = Math.max(0, Math.min(viewportWidth - 1, finalX));
+        finalY = Math.max(0, Math.min(viewportHeight - 1, finalY));
+
+        // Apply Magnetic Smart Snapping to interactive targets if active
+        if (window.GlanceMagnet) {
+          const snapResult = window.GlanceMagnet.snap(finalX, finalY);
+          point = [snapResult.x, snapResult.y];
+        } else {
           point = [finalX, finalY];
-          confidence = Math.max(confidence, 0.9);
-          fromHead = true;
-          if (!headCal && !headModeWarned) {
-            dispatchStatus('live', 'Head pointer (Alt+H to refine)');
-            headModeWarned = true;
-          } else if (headCal) {
-            headModeWarned = false;
-          }
+        }
+
+        confidence = Math.max(confidence, 0.9);
+        fromHead = true;
+        if (!headCal && !headModeWarned) {
+          dispatchStatus('live', 'Head pointer (Alt+C to center, Alt+H to calibrate)');
+          headModeWarned = true;
+        } else if (headCal) {
+          headModeWarned = false;
         }
       } else if (!headModeWarned) {
         dispatchStatus('ready', 'Need face landmarks for head pointer');
@@ -1255,6 +1448,24 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
       }
 
       ctx.fillText(`Mouth${calibrated}: ${(mouthRatio * 100).toFixed(0)}%${isMouthOpen ? ' CLICK!' : ''}${enabled}`, 10, 24);
+
+      // Display live eye EAR and wink detection status
+      const eyeStatus = window.__lastEyeEAR;
+      if (eyeStatus && Number.isFinite(eyeStatus.left)) {
+        const lPct = (eyeStatus.left * 100).toFixed(0);
+        const rPct = (eyeStatus.right * 100).toFixed(0);
+        let winkLabel = `Eyes: L:${lPct}% R:${rPct}%`;
+        if (eyeStatus.isLeftWink) {
+          ctx.fillStyle = '#38bdf8';
+          winkLabel += ' ⏪ LEFT WINK (-10s)';
+        } else if (eyeStatus.isRightWink) {
+          ctx.fillStyle = '#c084fc';
+          winkLabel += ' ⏩ RIGHT WINK (+10s)';
+        } else {
+          ctx.fillStyle = 'rgba(200, 220, 255, 0.9)';
+        }
+        ctx.fillText(winkLabel, 10, 48);
+      }
       ctx.shadowBlur = 0;
     } else if (headFrame) {
       // Draw rotation even without face mesh landmarks
@@ -1373,6 +1584,21 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
       mouthClickEnabled = changes.mouthClickEnabled.newValue || false;
       console.log('[GazeCore] Mouth click enabled changed to:', mouthClickEnabled);
     }
+    if (changes.winkSeekEnabled) {
+      winkSeekEnabled = Boolean(changes.winkSeekEnabled.newValue);
+      console.log('[GazeCore] Wink seek enabled changed to:', winkSeekEnabled);
+    }
+    if (changes.headSpeedMultiplier && typeof changes.headSpeedMultiplier.newValue === 'number') {
+      headSpeedMultiplier = changes.headSpeedMultiplier.newValue;
+      console.log('[GazeCore] Head speed multiplier set to:', headSpeedMultiplier);
+    }
+    if (changes.headTrackingSpeed) {
+      const spd = Number(changes.headTrackingSpeed.newValue);
+      if (spd === 1) headSpeedMultiplier = 0.72;
+      else if (spd === 2) headSpeedMultiplier = 0.88;
+      else if (spd === 3) headSpeedMultiplier = 1.05;
+      console.log('[GazeCore] Head tracking speed level set to:', spd, 'multiplier:', headSpeedMultiplier);
+    }
   }
 
   function handleVisibilityChange() {
@@ -1448,7 +1674,17 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
     mouthCalibration = cal;
   });
 
-  storageGet([GAZE_ENABLED_KEY, HEAD_CAL_STORAGE_KEY, EAR_CAL_STORAGE_KEY, 'mouthCalV1', 'mouthClickEnabled', 'headCalV1', 'earCalV1']).then((store) => {
+  storageGet([GAZE_ENABLED_KEY, HEAD_CAL_STORAGE_KEY, EAR_CAL_STORAGE_KEY, 'mouthCalV1', 'mouthClickEnabled', 'winkSeekEnabled', 'headCalV1', 'earCalV1', 'headSpeedMultiplier', 'headTrackingSpeed']).then((store) => {
+    if (typeof store.headSpeedMultiplier === 'number') {
+      headSpeedMultiplier = store.headSpeedMultiplier;
+    } else if (store.headTrackingSpeed === 1) {
+      headSpeedMultiplier = 0.72;
+    } else if (store.headTrackingSpeed === 2) {
+      headSpeedMultiplier = 0.88;
+    } else if (store.headTrackingSpeed === 3) {
+      headSpeedMultiplier = 1.05;
+    }
+
     if (store[HEAD_CAL_STORAGE_KEY]) {
       headCal = store[HEAD_CAL_STORAGE_KEY];
       headModeWarned = false;
@@ -1479,6 +1715,11 @@ let headAutoCenter = { nx: 0, ny: 0, ready: false };
     if (typeof store.mouthClickEnabled === 'boolean') {
       mouthClickEnabled = store.mouthClickEnabled;
       console.log('[GazeCore] Mouth click enabled:', mouthClickEnabled);
+    }
+
+    if (typeof store.winkSeekEnabled === 'boolean') {
+      winkSeekEnabled = store.winkSeekEnabled;
+      console.log('[GazeCore] Wink seek enabled:', winkSeekEnabled);
     }
 
     if (typeof store[GAZE_ENABLED_KEY] === 'boolean') {

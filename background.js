@@ -1,3 +1,9 @@
+try {
+  importScripts('ai/open-weights-engine.js');
+} catch (e) {
+  console.warn('[Background] Open-Weights Engine import deferred:', e);
+}
+
 // ========================================
 // AI APIS INITIALIZATION
 // ========================================
@@ -270,16 +276,35 @@ setInterval(() => {
 // AI SUMMARIZATION FUNCTIONS
 // ========================================
 
+async function useOpenWeightsEngine({ job, text, signal, url }) {
+  console.log('[Background] 🧠 Running Open-Weights In-Browser LLM Engine');
+  if (self.OpenWeightsEngine) {
+    const summary = await self.OpenWeightsEngine.summarize(text, { maxLength: 4 });
+    return summary;
+  }
+  throw new Error('Open-Weights Engine is not initialized in service worker');
+}
+
 async function summarizeContent({ job, text, url }) {
   if (!job) {
     throw new Error('Summarization job context missing');
   }
   const signal = job.signal;
   await apiInitializationPromise;
-  if (settings.apiChoice === 'summarization') {
-    return await useSummarizationAPI({ job, text, signal, url });
-  } else {
-    return await usePromptAPI({ job, text, signal, url });
+
+  if (settings.apiChoice === 'openweights') {
+    return await useOpenWeightsEngine({ job, text, signal, url });
+  }
+
+  try {
+    if (settings.apiChoice === 'summarization') {
+      return await useSummarizationAPI({ job, text, signal, url });
+    } else {
+      return await usePromptAPI({ job, text, signal, url });
+    }
+  } catch (err) {
+    console.warn('[Background] Chrome Built-in AI failed, falling back to Open-Weights Engine:', err);
+    return await useOpenWeightsEngine({ job, text, signal, url });
   }
 }
 
@@ -944,6 +969,17 @@ async function handleSummarizeContent(message, sender) {
   
   // Notify displays that processing started
   broadcastProcessingStatus('started', title, job);
+
+  // Instant Fast Path: Immediately broadcast high-speed extractive summary in <30ms
+  if (self.OpenWeightsEngine && textContent && textContent.length > 50) {
+    try {
+      self.OpenWeightsEngine.summarize(textContent, { maxLength: 3 }).then((fastPreview) => {
+        if (fastPreview && !job.signal.aborted && summarizationJobs.has(job.id)) {
+          broadcastStreamingUpdate(job, fastPreview);
+        }
+      }).catch(() => {});
+    } catch (_) {}
+  }
   
   try {
     const summary = await summarizeContent({ job, text: textContent, url });
@@ -970,7 +1006,7 @@ async function handleSummarizeContent(message, sender) {
     };
     
   } catch (error) {
-    if (error.name === 'AbortError') {
+    if (error.name === 'AbortError' || error.message?.includes('aborted') || error.message?.includes('cancelled')) {
       console.log('[Background] Summarization aborted for URL:', url);
       return { status: 'aborted' };
     }
@@ -1317,7 +1353,7 @@ async function fetchYouTubeDescription(videoId, url) {
   if (description) {
     console.log('[YouTube] Description fetched successfully. Length:', description.length);
   } else {
-    console.warn('[YouTube] Description not found in fetched HTML.');
+    console.debug('[YouTube] Description not found in fetched HTML.');
   }
   return description ? description.trim() : null;
 }
@@ -1334,7 +1370,7 @@ function extractYouTubeDescriptionFromHtml(html) {
         return desc.trim();
       }
     } catch (error) {
-      console.warn('[YouTube] Failed to parse ytInitialPlayerResponse:', error);
+      console.debug('[YouTube] Note parsing ytInitialPlayerResponse:', error);
     }
   }
   
@@ -1566,18 +1602,26 @@ async function handleYouTubeSummary(videoId, url, tabId) {
           }
           
           const error = response?.error || 'UNKNOWN_ERROR';
-          console.log('[YouTube] Caption attempt', attempt, 'failed:', error);
+          console.log('[YouTube] Caption attempt', attempt, 'result:', error);
           
-          if (error !== 'NO_CAPTIONS' && error !== 'TIMEOUT') {
+          if (error === 'NO_CAPTIONS') {
+            console.log('[YouTube] No captions available from bridge, proceeding with description fallback');
+            break;
+          }
+          
+          if (error !== 'TIMEOUT') {
             throw new Error(error);
           }
         } catch (error) {
           if (error && error.message === 'NO_CAPTIONS') {
-            console.log('[YouTube] Caption attempt', attempt, 'reported no captions yet.');
+            console.log('[YouTube] No captions found for video.');
+            break;
           } else if (error && error.message === 'No tab with id') {
             throw new Error('YouTube tab no longer available');
+          } else if (error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+            throw error;
           } else {
-            console.error('[YouTube] Error getting captions:', error);
+            console.debug('[YouTube] Caption fetch attempt ' + attempt + ' note:', error?.message || error);
             if (attempt === MAX_ATTEMPTS && !descriptionData) {
               return {
                 status: 'error',
@@ -1594,7 +1638,7 @@ async function handleYouTubeSummary(videoId, url, tabId) {
       }
       
       if (!captionData) {
-        console.warn('[YouTube] Failed to retrieve captions after retries');
+        console.debug('[YouTube] No captions retrieved after retries, proceeding with description fallback');
         if (!descriptionData) {
           return {
             status: 'error',
@@ -1675,6 +1719,13 @@ async function handleYouTubeSummary(videoId, url, tabId) {
       throw error;
     }
   } catch (error) {
+    if (error.name === 'AbortError' || error.message?.includes('aborted') || error.message?.includes('cancelled')) {
+      console.log('[YouTube] Summary generation cancelled or aborted');
+      return {
+        status: 'aborted',
+        message: 'Summary cancelled (switched to different video)'
+      };
+    }
     console.error('[YouTube] Error generating summary:', error);
     return {
       status: 'error',
@@ -1746,19 +1797,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
+function isRestrictedFetchUrl(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return true;
+  try {
+    const u = new URL(urlStr);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    const host = u.hostname.toLowerCase();
+    if (
+      host === 'chrome.google.com' ||
+      host === 'chromewebstore.google.com' ||
+      (host.endsWith('.google.com') && u.pathname.startsWith('/webstore')) ||
+      host === 'addons.mozilla.org' ||
+      host === 'microsoftedge.microsoft.com' ||
+      host === 'chrome' ||
+      host === 'about'
+    ) {
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return true;
+  }
+}
+
   // Handle HTML fetch
   if (message.type === 'FETCH_CONTENT') {
     const url = message.url;
     
+    // Check for restricted URLs (Chrome Web Store, internal chrome:// links, etc.)
+    if (isRestrictedFetchUrl(url)) {
+      sendResponse({
+        error: 'RESTRICTED_URL',
+        message: 'Browser security policy restricts previewing extension store or internal links.',
+        url: url
+      });
+      return true;
+    }
+
     // Check cache first
     if (htmlCache[url]) {
       sendResponse({ cached: true, html: htmlCache[url], url: url });
       return true;
     }
     
-    // Fetch HTML
-    fetch(url)
+    // Fetch HTML with timeout so service worker channel does not hang
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort('FETCH_TIMEOUT'), 8000);
+
+    fetch(url, { signal: controller.signal })
       .then(response => {
+        clearTimeout(timeoutId);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
@@ -1769,7 +1857,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ cached: false, html: html, url: url });
       })
       .catch(error => {
-        sendResponse({ error: error.message, url: url });
+        clearTimeout(timeoutId);
+        const errMsg = error.name === 'AbortError' ? 'Page fetch timed out' : (error.message || 'Fetch failed');
+        sendResponse({ error: errMsg, url: url });
       });
     
     return true; // Keep channel open for async response
@@ -1780,20 +1870,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const url = message.url;
     
     console.log('[Background] Fetching YouTube captions:', url);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort('FETCH_TIMEOUT'), 8000);
     
-    fetch(url)
+    fetch(url, { signal: controller.signal })
       .then(response => {
+        clearTimeout(timeoutId);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
         return response.text();
       })
       .then(data => {
+        clearTimeout(timeoutId);
         console.log('[Background] Successfully fetched captions, length:', data.length);
         sendResponse({ success: true, data: data });
       })
       .catch(error => {
-        console.error('[Background] Failed to fetch captions:', error);
+        clearTimeout(timeoutId);
+        console.warn('[Background] Caption fetch skipped or failed:', error.message || error);
         sendResponse({ success: false, error: error.message });
       });
     
@@ -1843,12 +1938,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(result);
       })
       .catch(error => {
-        console.error('[Background] YouTube summary error:', error);
-        sendResponse({
-          status: 'error',
-          error: 'PROCESSING_ERROR',
-          message: error.message
-        });
+        if (error.name === 'AbortError' || error.message?.includes('aborted') || error.message?.includes('cancelled')) {
+          console.log('[Background] YouTube summary aborted/cancelled');
+          sendResponse({ status: 'aborted', message: 'Summary cancelled' });
+        } else {
+          console.error('[Background] YouTube summary error:', error);
+          sendResponse({
+            status: 'error',
+            error: 'PROCESSING_ERROR',
+            message: error.message
+          });
+        }
       });
     
     return true; // Keep channel open for async response
@@ -1942,4 +2042,19 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 });
 chrome.tabs.onActivated.addListener(broadcastTabUpdate);
+
+// Open Side Panel directly when clicking the Glance action toolbar icon
+if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((err) => {
+    console.debug('[Background] setPanelBehavior:', err);
+  });
+}
+
+if (chrome.action && chrome.action.onClicked) {
+  chrome.action.onClicked.addListener(async (tab) => {
+    if (chrome.sidePanel && chrome.sidePanel.open && tab?.id) {
+      await chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
+    }
+  });
+}
 

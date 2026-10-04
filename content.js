@@ -2,6 +2,7 @@
   'use strict';
   
   // Configuration
+  let currentHoverDelay = 300;
   const HOVER_DELAY = 300;
   const IS_YOUTUBE = window.location.hostname.includes('youtube.com');
   const IS_TWITTER = window.location.hostname.includes('twitter.com') || window.location.hostname.includes('x.com');
@@ -11,6 +12,52 @@
   const debugLog = (...args) => {
     if (DEBUG_ENABLED) console.log(...args);
   };
+
+  // Shield against extension context invalidation errors during reload
+  window.addEventListener('error', (event) => {
+    if (event?.message && event.message.includes('Extension context invalidated')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+
+  window.addEventListener('unhandledrejection', (event) => {
+    const reasonStr = String(event?.reason?.message || event?.reason || '');
+    if (reasonStr.includes('Extension context invalidated')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+
+  // Safe extension context check and runtime messaging
+  function isExtensionContextValid() {
+    try {
+      return Boolean(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+    } catch {
+      return false;
+    }
+  }
+
+  function safeRuntimeSendMessage(payload) {
+    return new Promise((resolve) => {
+      if (!isExtensionContextValid()) {
+        resolve({ error: 'Extension context invalidated', status: 'aborted', aborted: true });
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(payload, (response) => {
+          const err = chrome.runtime.lastError;
+          if (err) {
+            resolve({ error: err.message || 'Runtime error', status: 'aborted', aborted: true });
+            return;
+          }
+          resolve(response || { status: 'ok' });
+        });
+      } catch (error) {
+        resolve({ error: error?.message || 'Extension context invalidated', status: 'aborted', aborted: true });
+      }
+    });
+  }
   
   const REDDIT_HOSTS = [
     'reddit.com',
@@ -1162,6 +1209,31 @@
       return false;
     }
   }
+
+  function isRestrictedFetchUrl(url) {
+    if (!url) return true;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return true;
+      }
+      const host = parsed.hostname.toLowerCase();
+      if (
+        host === 'chrome.google.com' ||
+        host === 'chromewebstore.google.com' ||
+        host.endsWith('.chrome.google.com') ||
+        host === 'addons.mozilla.org' ||
+        host === 'microsoftedge.microsoft.com' ||
+        host === 'chrome' ||
+        host === 'about'
+      ) {
+        return true;
+      }
+      return false;
+    } catch {
+      return true;
+    }
+  }
   
   function extractYouTubeVideoId(url) {
     if (!url) return null;
@@ -1210,6 +1282,14 @@
   
   // Handle mouseover
   function handleMouseOver(e) {
+    if (!isExtensionContextValid()) {
+      try {
+        document.body.removeEventListener('mouseover', handleMouseOver, true);
+        document.body.removeEventListener('mouseout', handleMouseOut, true);
+      } catch (_) {}
+      return;
+    }
+
     // Skip mouse hover if head tracking is enabled
     if (gazeEnabled) {
       return;
@@ -1312,7 +1392,7 @@
           return;
         }
       } catch (error) {
-        console.warn('[YouTube] Invalid thumbnail URL, skipping');
+        console.debug('[YouTube] Invalid thumbnail URL, skipping');
         return;
       }
       const videoId = extractYouTubeVideoId(url);
@@ -1335,7 +1415,7 @@
       }
 
       if (!thumbnailElement) {
-        console.warn('[YouTube] Could not find thumbnail element, skipping');
+        console.debug('[YouTube] Could not find thumbnail element, skipping');
         return;
       }
 
@@ -1347,12 +1427,10 @@
       if (isSwitch) {
         console.debug(`[YouTube] 🔴 SWITCHING FROM ${currentlyProcessingUrl} TO ${canonicalUrl}`);
         const oldVideoId = extractYouTubeVideoId(currentlyProcessingUrl);
-        chrome.runtime.sendMessage({
+        safeRuntimeSendMessage({
           action: 'ABORT_YOUTUBE_SUMMARY',
           videoId: oldVideoId,
           newVideoId: videoId
-        }, response => {
-          console.debug('[YouTube] Abort response:', response);
         });
       }
       
@@ -1423,12 +1501,10 @@
       if (isSwitch) {
         console.debug(`[YouTube] 🔴 SWITCHING FROM ${currentlyProcessingUrl} TO ${canonicalUrl}`);
         const oldVideoId = extractYouTubeVideoId(currentlyProcessingUrl);
-        chrome.runtime.sendMessage({
+        safeRuntimeSendMessage({
           action: 'ABORT_YOUTUBE_SUMMARY',
           videoId: oldVideoId,
           newVideoId: videoId
-        }, response => {
-          console.debug('[YouTube] Abort response:', response);
         });
       }
       const requestToken = ++currentYouTubeRequestToken;
@@ -1473,18 +1549,32 @@
       hideTimeout = null;
     }
     
-    debugLog(`✅ HOVER: ${linkType} "${shortUrl}" (will trigger in ${HOVER_DELAY}ms)`);
+    debugLog(`✅ HOVER: ${linkType} "${shortUrl}" (will trigger in ${currentHoverDelay}ms)`);
     
     currentHoveredElement = link;
     
     clearTimeout(currentHoverTimeout);
+
+    // Early pre-fetch after 80ms so HTML is cached by the time dwell finishes
+    const prefetchDelay = Math.min(100, Math.max(40, currentHoverDelay / 3));
+    const prefetchTimer = setTimeout(() => {
+      if (url && !isRestrictedFetchUrl(url) && isExtensionContextValid()) {
+        safeRuntimeSendMessage({ type: 'FETCH_CONTENT', url });
+      }
+    }, prefetchDelay);
+
     currentHoverTimeout = setTimeout(() => {
-      processLinkHover(link);
-    }, HOVER_DELAY);
+      clearTimeout(prefetchTimer);
+      if (!isExtensionContextValid()) return;
+      processLinkHover(link).catch((err) => {
+        console.debug('[Content] Hover process suppressed:', err?.message || err);
+      });
+    }, currentHoverDelay);
   }
   
   // Handle mouseout
   function handleMouseOut(e) {
+    if (!isExtensionContextValid()) return;
     const link = findLink(e.target);
     if (!link) {
       if (IS_TWITTER) {
@@ -1664,16 +1754,31 @@
       return;
     }
     
+    if (isRestrictedFetchUrl(url)) {
+      if (displayMode === 'tooltip' || displayMode === 'both') {
+        showTooltip(link, '<div style="padding:10px;background:#f3f4f6;border-radius:8px;font-size:13px;color:#4b5563;">Web Store and system links cannot be fetched directly due to browser security policy.</div>', url);
+      }
+      currentlyProcessingUrl = null;
+      processingElement = null;
+      return;
+    }
+
     // Fetch HTML
-    const response = await chrome.runtime.sendMessage({
+    const response = await safeRuntimeSendMessage({
       type: 'FETCH_CONTENT',
       url: url
     });
     
-    if (response.error) {
-      console.error('[Content] Fetch error:', response.error);
+    if (!response || response.error) {
+      if (response?.error?.includes('Extension context invalidated')) {
+        currentlyProcessingUrl = null;
+        processingElement = null;
+        return;
+      }
+      console.debug('[Content] Fetch result:', response?.error || 'No response');
       if (displayMode === 'tooltip' || displayMode === 'both') {
-        showTooltip(link, `<div style="padding:10px;background:#fee;border-radius:8px;">Error: ${response.error}</div>`, url);
+        const msg = response?.message || response?.error || 'Unable to load preview';
+        showTooltip(link, `<div style="padding:10px;background:#fee;border-radius:8px;font-size:13px;color:#991b1b;">${msg}</div>`, url);
       }
       currentlyProcessingUrl = null;
       processingElement = null;
@@ -1709,7 +1814,7 @@
     }
     
     // Request summarization from background
-    const result = await chrome.runtime.sendMessage({
+    const result = await safeRuntimeSendMessage({
       type: 'SUMMARIZE_CONTENT',
       url: url,
       title: title,
@@ -1729,7 +1834,7 @@
     }
     
     try {
-      const result = await chrome.runtime.sendMessage({
+      const result = await safeRuntimeSendMessage({
         type: 'SUMMARIZE_REDDIT_POST',
         url: url
       });
@@ -1807,11 +1912,11 @@
         }
         
         if (displayMode === 'panel' || displayMode === 'both') {
-          chrome.runtime.sendMessage({
+          safeRuntimeSendMessage({
             type: 'DISPLAY_CACHED_SUMMARY',
             title: result.title,
             summary: formattedSummary
-          }).catch(() => {});
+          });
         }
         
         currentlyProcessingUrl = null;
@@ -1832,110 +1937,136 @@
     // Streaming updates are handled via STREAMING_UPDATE messages.
   }
   
-  // Listen for messages from background
+  // Listen for messages from background safely
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'CAPTURE_TWITTER_THREAD') {
-      if (!IS_TWITTER) {
-        sendResponse({ status: 'error', error: 'NOT_TWITTER_CONTEXT' });
+    try {
+      if (!isExtensionContextValid()) {
         return false;
       }
-      (async () => {
+      
+      const safeSendResponse = (resp) => {
         try {
-          const payload = await captureThreadForBackground(message.tweetId);
-          if (payload && payload.nodes && payload.nodes.length) {
-            sendResponse({ status: 'ok', payload });
-          } else {
-            sendResponse({ status: 'error', error: 'NO_THREAD_DATA' });
+          if (isExtensionContextValid() && typeof sendResponse === 'function') {
+            sendResponse(resp);
           }
-        } catch (error) {
-          sendResponse({ status: 'error', error: error ? error.message : 'CAPTURE_FAILED' });
-        }
-      })();
-      return true;
-    }
-    
-    if (message.type === 'STREAMING_UPDATE') {
-      // Only accept updates for the EXACT URL we're currently processing
-      const isValid = message.url === currentlyProcessingUrl;
-      if (!isValid) {
-        if (IS_YOUTUBE) {
-          console.debug(`[YouTube] REJECTED stale update for: ${message.url}`);
-          console.debug(`  Currently processing: ${currentlyProcessingUrl}`);
-        }
-        return;
+        } catch (_) {}
+      };
+
+      if (!message || typeof message !== 'object') {
+        return false;
       }
-      updateTooltipContent(message.content, message.url);
-    }
-    
-    if (message.type === 'PROCESSING_STATUS') {
-      if (message.status === 'started' && currentHoveredElement) {
-        if (displayMode === 'tooltip' || displayMode === 'both') {
-          showTooltip(currentHoveredElement, `<div style="opacity:0.6;font-style:italic;">Generating summary...</div>`, message.url);
+
+      if (message.type === 'CAPTURE_TWITTER_THREAD') {
+        if (!IS_TWITTER) {
+          safeSendResponse({ status: 'error', error: 'NOT_TWITTER_CONTEXT' });
+          return false;
         }
+        (async () => {
+          try {
+            const payload = await captureThreadForBackground(message.tweetId);
+            if (payload && payload.nodes && payload.nodes.length) {
+              safeSendResponse({ status: 'ok', payload });
+            } else {
+              safeSendResponse({ status: 'error', error: 'NO_THREAD_DATA' });
+            }
+          } catch (error) {
+            safeSendResponse({ status: 'error', error: error ? error.message : 'CAPTURE_FAILED' });
+          }
+        })();
+        return true;
       }
-    }
-    
-    if (message.type === 'DISPLAY_MODE_CHANGED') {
-      displayMode = message.displayMode;
-      debugLog('[Content] Display mode updated:', displayMode);
-      if (displayMode === 'panel') {
-        hideTooltip();
+      
+      if (message.type === 'STREAMING_UPDATE') {
+        // Only accept updates for the EXACT URL we're currently processing
+        const isValid = message.url === currentlyProcessingUrl;
+        if (!isValid) {
+          if (IS_YOUTUBE) {
+            console.debug(`[YouTube] REJECTED stale update for: ${message.url}`);
+            console.debug(`  Currently processing: ${currentlyProcessingUrl}`);
+          }
+          return false;
+        }
+        updateTooltipContent(message.content, message.url);
+        return false;
       }
-    }
+      
+      if (message.type === 'PROCESSING_STATUS') {
+        if (message.status === 'started' && currentHoveredElement) {
+          if (displayMode === 'tooltip' || displayMode === 'both') {
+            showTooltip(currentHoveredElement, `<div style="opacity:0.6;font-style:italic;">Generating summary...</div>`, message.url);
+          }
+        }
+        return false;
+      }
+      
+      if (message.type === 'DISPLAY_MODE_CHANGED') {
+        displayMode = message.displayMode;
+        debugLog('[Content] Display mode updated:', displayMode);
+        if (displayMode === 'panel') {
+          hideTooltip();
+        }
+        return false;
+      }
 
-    if (message.type === 'GAZE_ENABLED_CHANGED') {
-      gazeEnabled = message.gazeEnabled;
-      debugLog('[Content] Gaze enabled updated:', gazeEnabled);
-    }
+      if (message.type === 'GAZE_ENABLED_CHANGED') {
+        gazeEnabled = message.gazeEnabled;
+        debugLog('[Content] Gaze enabled updated:', gazeEnabled);
+        return false;
+      }
 
-    if (message.type === 'TRIGGER_CALIBRATION') {
-      debugLog('[Content] Triggering head calibration');
-      // Trigger Alt+H keyboard event to start calibration
-      const event = new KeyboardEvent('keydown', {
-        key: 'h',
-        code: 'KeyH',
-        altKey: true,
-        bubbles: true,
-        cancelable: true
-      });
-      document.dispatchEvent(event);
-    }
+      if (message.type === 'TRIGGER_CALIBRATION') {
+        debugLog('[Content] Triggering head calibration');
+        // Trigger Alt+H keyboard event to start calibration
+        const event = new KeyboardEvent('keydown', {
+          key: 'h',
+          code: 'KeyH',
+          altKey: true,
+          bubbles: true,
+          cancelable: true
+        });
+        document.dispatchEvent(event);
+        return false;
+      }
 
-    if (message.type === 'TRIGGER_MOUTH_CALIBRATION') {
-      debugLog('[Content] Triggering mouth calibration');
-      // Trigger Alt+M keyboard event to start mouth calibration
-      const event = new KeyboardEvent('keydown', {
-        key: 'm',
-        code: 'KeyM',
-        altKey: true,
-        bubbles: true,
-        cancelable: true
-      });
-      document.dispatchEvent(event);
-    }
+      if (message.type === 'TRIGGER_MOUTH_CALIBRATION') {
+        debugLog('[Content] Triggering mouth calibration');
+        // Trigger Alt+M keyboard event to start mouth calibration
+        const event = new KeyboardEvent('keydown', {
+          key: 'm',
+          code: 'KeyM',
+          altKey: true,
+          bubbles: true,
+          cancelable: true
+        });
+        document.dispatchEvent(event);
+        return false;
+      }
 
-    if (message.type === 'PING') {
-      // Respond to ping to confirm content script is loaded
-      sendResponse({ status: 'ok' });
-      return true;
+      if (message.type === 'PING') {
+        // Respond to ping to confirm content script is loaded
+        safeSendResponse({ status: 'ok' });
+        return true;
+      }
+    } catch (e) {
+      console.debug('[Content] Safely caught onMessage error:', e);
+      return false;
     }
+    return false;
   });
 
   // Listen for gaze:status events and relay to sidepanel
   window.addEventListener('gaze:status', (event) => {
-    if (event.detail) {
-      chrome.runtime.sendMessage({
+    if (event.detail && isExtensionContextValid()) {
+      safeRuntimeSendMessage({
         type: 'GAZE_STATUS',
         phase: event.detail.phase,
         note: event.detail.note
-      }).catch(() => {
-        // Ignore errors if sidepanel not open
       });
     }
   });
   
-  // Get initial display mode and gaze enabled status
-  chrome.storage.local.get(['displayMode', 'gazeEnabled'], (result) => {
+  // Get initial display mode, dwell time and gaze enabled status
+  chrome.storage.local.get(['displayMode', 'gazeEnabled', 'gazeDwellMs'], (result) => {
     if (result.displayMode) {
       displayMode = result.displayMode;
       debugLog('[Content] Initial display mode:', displayMode);
@@ -1943,6 +2074,17 @@
     if (typeof result.gazeEnabled === 'boolean') {
       gazeEnabled = result.gazeEnabled;
       debugLog('[Content] Initial gaze enabled:', gazeEnabled);
+    }
+    if (typeof result.gazeDwellMs === 'number' && result.gazeDwellMs >= 150) {
+      currentHoverDelay = result.gazeDwellMs;
+      debugLog('[Content] Initial hover delay set from gazeDwellMs:', currentHoverDelay);
+    }
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.gazeDwellMs && typeof changes.gazeDwellMs.newValue === 'number') {
+      currentHoverDelay = Math.max(150, changes.gazeDwellMs.newValue);
+      debugLog('[Content] Hover delay updated from gazeDwellMs:', currentHoverDelay);
     }
   });
   
@@ -2086,7 +2228,7 @@
       currentlyProcessingUrl
     });
     if (requestToken !== currentYouTubeRequestToken) {
-      console.warn('[YouTube] Stale hover request, ignoring', {
+      console.debug('[YouTube] Stale hover request, ignoring', {
         requestToken,
         currentToken: currentYouTubeRequestToken
       });
@@ -2094,7 +2236,7 @@
     }
     const videoId = extractYouTubeVideoId(url);
     if (!videoId) {
-      console.warn('[YouTube] Could not extract video ID from:', url);
+      console.debug('[YouTube] Could not extract video ID from:', url);
       currentlyProcessingUrl = null;
       return;
     }
@@ -2108,7 +2250,7 @@
     }
     const summaryTimeout = setTimeout(() => {
       if (currentlyProcessingUrl === url) {
-        chrome.runtime.sendMessage({
+        safeRuntimeSendMessage({
           action: 'ABORT_YOUTUBE_SUMMARY',
           videoId
         });
@@ -2125,37 +2267,37 @@
 
     try {
       await waitForYouTubeCaptions(videoId);
-    console.log('[YouTube] Captions ready before summary request:', videoId);
+      console.log('[YouTube] Captions ready before summary request:', videoId);
     } catch (error) {
-      console.warn('[YouTube] Captions did not arrive in time, continuing anyway:', videoId, error && error.message ? error.message : error);
+      console.debug('[YouTube] Captions did not arrive in time, continuing anyway:', videoId, error && error.message ? error.message : error);
     }
 
     if (displayMode === 'tooltip' || displayMode === 'both') {
       showTooltip(tooltipAnchor, '<div style="text-align:center;padding:16px;opacity:0.75;">Generating summary…</div>', url, tooltipOptions);
     }
     if (requestToken !== currentYouTubeRequestToken) {
-      console.warn('[YouTube] Request token changed after caption wait, aborting send', {
+      console.debug('[YouTube] Request token changed after caption wait, aborting send', {
         requestToken,
         currentToken: currentYouTubeRequestToken
       });
       return;
     }
     console.log('[YouTube] Sending GET_YOUTUBE_SUMMARY', { videoId, url, requestToken });
-    chrome.runtime.sendMessage({
+    safeRuntimeSendMessage({
       action: 'GET_YOUTUBE_SUMMARY',
       videoId,
       url
-    }, (response) => {
+    }).then((response) => {
       clearTimeout(summaryTimeout);
       if (requestToken !== currentYouTubeRequestToken) {
-        console.warn('[YouTube] Request token changed before response handling', {
+        console.debug('[YouTube] Request token changed before response handling', {
           requestToken,
           currentToken: currentYouTubeRequestToken
         });
         return;
       }
       if (chrome.runtime.lastError) {
-        console.error('[YouTube] Runtime error:', chrome.runtime.lastError);
+        console.debug('[YouTube] Runtime communication note:', chrome.runtime.lastError.message || chrome.runtime.lastError);
         if (displayMode === 'tooltip' || displayMode === 'both') {
           showTooltip(tooltipAnchor, '<div style="padding:10px;background:#fee;border-radius:8px;">Error generating summary.</div>', url, tooltipOptions);
         }
@@ -2163,7 +2305,7 @@
         return;
       }
       if (!response) {
-        console.warn('[YouTube] Empty response from background');
+        console.debug('[YouTube] Empty response from background');
         currentlyProcessingUrl = null;
         return;
       }
@@ -2173,7 +2315,7 @@
         const formatted = formatAISummary(summary);
         showTooltip(tooltipAnchor, formatted, url, tooltipOptions);
         if (displayMode === 'sidepanel' || displayMode === 'both') {
-          chrome.runtime.sendMessage({
+          safeRuntimeSendMessage({
             action: 'DISPLAY_CACHED_SUMMARY',
             summary,
             url

@@ -1,0 +1,13 @@
+/**
+ * Visual styling for elements magnetically acquired by Glance Head Tracker
+ */
+.glance-magnetic-locked {
+  outline: 2px dashed rgba(59, 130, 246, 0.75) !important;
+  outline-offset: 3px !important;
+  transition: outline 0.15s ease-out !important;
+}
+
+#gaze-pointer.magnetic-active {
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.4), 0 0 15px rgba(59, 130, 246, 0.8) !important;
+  transform: scale(1.15) !important;
+}

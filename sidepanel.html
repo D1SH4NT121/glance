@@ -1,181 +1,456 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
-  <link rel="stylesheet" href="sidepanel.css?v=2">
+  <title>Glance &amp; GLO — Your Tiny Web Sidekick</title>
+  <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
   <div id="container">
-    <!-- Header with Branding -->
-    <div id="glance-header">
-      <img src="icons/icon-48.png" alt="Glance" class="glance-logo">
-      <h2 class="glance-title">Glance</h2>
-    </div>
 
-    <!-- Head Tracking Section (Main Feature First!) -->
-    <div id="gaze-section">
-      <h3>🎯 Head Tracking (Hands-Free)</h3>
-
-      <div class="setting-group">
-        <label class="toggle-container">
-          <input type="checkbox" id="gaze-enabled" checked>
-          <span class="toggle-slider"></span>
-          <span class="toggle-label">Enable Head Tracking</span>
-        </label>
-        <p class="help-text">Requires camera access for head movement detection</p>
+    <!-- 1. HEADER WITH BRANDING & LIVE STATUS -->
+    <header class="panel-header">
+      <div class="brand-wrapper">
+        <div class="glo-avatar-badge" title="GLO Sidekick">
+          <svg class="w-6 h-6" viewBox="0 0 100 100" fill="none" style="width: 26px; height: 26px;">
+            <path d="M 50 16 C 30 16 20 30 20 50 C 20 68 32 80 50 80 C 68 80 80 68 80 50 C 80 30 70 16 50 16 Z" fill="#FFF8EE" stroke="#171717" stroke-width="6"/>
+            <ellipse cx="36" cy="48" rx="8" ry="10" fill="#171717"/>
+            <ellipse cx="64" cy="48" rx="8" ry="10" fill="#171717"/>
+            <circle cx="34" cy="45" r="3.5" fill="#FFF"/>
+            <circle cx="62" cy="45" r="3.5" fill="#FFF"/>
+            <path d="M 46 62 Q 50 67 54 62" stroke="#171717" stroke-width="4" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="brand-titles">
+          <h1>GLANCE <span class="version-pill">v1.2</span></h1>
+          <p>your tiny web sidekick</p>
+        </div>
       </div>
 
-      <div class="status-indicator">
-        <span class="status-dot" id="gaze-status-dot"></span>
-        <span id="gaze-status-text">Disabled</span>
+      <div class="header-actions">
+        <div class="status-pill" id="header-status-pill" title="Extension Status">
+          <span class="status-dot-pulse" id="gaze-status-dot"></span>
+          <span id="gaze-status-text">ONLINE</span>
+        </div>
+        <button class="icon-btn" id="open-shortcuts-btn" title="Keyboard Shortcuts (Alt+H, Alt+C...)">⌨️</button>
+        <button class="icon-btn" id="open-settings-btn" title="Glance Preferences">⚙️</button>
+      </div>
+    </header>
+
+    <!-- 2. GLO HERO STAGE (LIVING INTERACTIVE CHARACTER) -->
+    <section class="glo-stage" id="glo-interactive-stage">
+      <div class="stage-blobs">
+        <div class="blob-1"></div>
+        <div class="blob-2"></div>
       </div>
 
-      <button id="calibrate-btn" class="btn secondary">
-        Calibrate Head Position
+      <div class="glo-svg-wrapper" id="glo-avatar" title="Click GLO for a cheerful thought!">
+        <svg id="glo-svg" viewBox="0 0 160 140" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 100%;">
+          <defs>
+            <filter id="glo-glow" x="-10%" y="-10%" width="120%" height="120%">
+              <feDropShadow dx="2" dy="3" stdDeviation="0" flood-color="#171717"/>
+            </filter>
+            <radialGradient id="glo-body-grad" cx="50%" cy="40%" r="60%">
+              <stop offset="0%" stop-color="#FFFFFF"/>
+              <stop offset="75%" stop-color="#FFF8EE"/>
+              <stop offset="100%" stop-color="#F2E6CE"/>
+            </radialGradient>
+          </defs>
+
+          <!-- Antenna & Beacon Light -->
+          <g id="glo-antenna">
+            <path d="M 80 34 L 80 14" stroke="#171717" stroke-width="3.5" stroke-linecap="round"/>
+            <circle cx="80" cy="11" r="7.5" fill="#FF7657" stroke="#171717" stroke-width="2.5" class="beacon-pulse-anim"/>
+            <circle cx="78" cy="9" r="2.2" fill="#FFFFFF"/>
+          </g>
+
+          <!-- Main Teardrop-Optic Body -->
+          <path id="glo-body"
+            d="M 80 26 
+               C 122 26, 146 54, 144 88 
+               C 142 116, 114 132, 80 132 
+               C 46 132, 18 116, 16 88 
+               C 14 54, 38 26, 80 26 Z"
+            fill="url(#glo-body-grad)"
+            stroke="#171717"
+            stroke-width="3.5"
+            stroke-linejoin="round"
+            filter="url(#glo-glow)"/>
+
+          <!-- Blush Cheeks -->
+          <ellipse id="glo-blush-left" cx="44" cy="94" rx="9" ry="5.5" fill="#FF5CAA" opacity="0.6"/>
+          <ellipse id="glo-blush-right" cx="116" cy="94" rx="9" ry="5.5" fill="#FF5CAA" opacity="0.6"/>
+
+          <!-- Left Eye Socket -->
+          <g id="glo-eye-left">
+            <ellipse cx="56" cy="78" rx="17" ry="21" fill="#171717"/>
+            <g id="glo-pupil-group-l">
+              <ellipse id="glo-iris-l" cx="56" cy="78" rx="14" ry="17" fill="#171717"/>
+              <ellipse id="glo-pupil-l" cx="56" cy="78" rx="10" ry="12" fill="#6EE7C8"/>
+              <circle cx="51" cy="71" r="5" fill="#FFFFFF"/>
+              <circle cx="61" cy="84" r="2.5" fill="#FFFFFF"/>
+            </g>
+          </g>
+
+          <!-- Right Eye Socket -->
+          <g id="glo-eye-right">
+            <ellipse cx="104" cy="78" rx="17" ry="21" fill="#171717"/>
+            <g id="glo-pupil-group-r">
+              <ellipse id="glo-iris-r" cx="104" cy="78" rx="14" ry="17" fill="#171717"/>
+              <ellipse id="glo-pupil-r" cx="104" cy="78" rx="10" ry="12" fill="#6EE7C8"/>
+              <circle cx="99" cy="71" r="5" fill="#FFFFFF"/>
+              <circle cx="109" cy="84" r="2.5" fill="#FFFFFF"/>
+            </g>
+          </g>
+
+          <!-- Sweet Kawaii Mouth -->
+          <path id="glo-mouth"
+            d="M 74 97 Q 80 103 86 97"
+            stroke="#171717"
+            stroke-width="3.5"
+            stroke-linecap="round"
+            fill="none"/>
+
+          <!-- Sparkle Highlights -->
+          <path d="M 33 46 Q 37 46 37 42 Q 37 46 41 46 Q 37 46 37 50 Q 37 46 33 46 Z" fill="#FFD84D" stroke="#171717" stroke-width="1"/>
+          <path d="M 125 43 Q 129 43 129 39 Q 129 43 133 43 Q 129 43 129 47 Q 129 43 125 43 Z" fill="#FF5CAA" stroke="#171717" stroke-width="1"/>
+        </svg>
+      </div>
+
+      <!-- Speech Bubble -->
+      <div class="glo-speech-bubble" id="glo-speech-bubble" title="Click for new thought">
+        <span id="glo-quote">✨ hey :) | ready when you are</span>
+      </div>
+    </section>
+
+    <!-- 3. QUICK ACTION STATUS GRID -->
+    <section class="quick-status-grid">
+      <button class="status-card-btn active-pink" id="quick-gaze-btn" title="Toggle Hands-Free Head Tracking">
+        <span>👀 GAZE</span>
+        <span class="status-badge-val" id="quick-gaze-val">ON</span>
       </button>
 
-      <div class="setting-group">
-        <label class="setting-label" for="dwell-time">
-          Dwell Time: <span id="dwell-value">600</span>ms
-        </label>
-        <input type="range" id="dwell-time" min="300" max="1200" step="50" value="600" class="slider">
-        <p class="help-text">Time to hover before clicking a link</p>
-      </div>
-
-      <details class="keyboard-shortcuts">
-        <summary>Keyboard Shortcuts</summary>
-        <ul>
-          <li><kbd>Alt+H</kbd> - Calibrate head tracking</li>
-          <li><kbd>Alt+M</kbd> - Calibrate mouth click</li>
-          <li><kbd>Alt+P</kbd> - Toggle pointer visibility</li>
-          <li><kbd>Alt+V</kbd> - Toggle camera preview</li>
-          <li><kbd>Shift+H</kbd> - Toggle debug HUD</li>
-        </ul>
-      </details>
-    </div>
-
-    <hr>
-
-    <!-- Mouth Click Section -->
-    <div id="mouth-click-section">
-      <h3>👄 Mouth Click (Optional)</h3>
-
-      <div class="setting-group">
-        <label class="toggle-container">
-          <input type="checkbox" id="mouth-click-enabled">
-          <span class="toggle-slider"></span>
-          <span class="toggle-label">Enable Mouth Click</span>
-        </label>
-        <p class="help-text">Open your mouth wide to trigger clicks</p>
-      </div>
-
-      <div class="status-indicator">
-        <span class="status-dot" id="mouth-status-dot"></span>
-        <span id="mouth-status-text">Not calibrated</span>
-      </div>
-
-      <button id="calibrate-mouth-btn" class="btn secondary">
-        Calibrate Mouth Click
+      <button class="status-card-btn active-mint" id="quick-mouth-btn" title="Toggle Mouth Click Action">
+        <span>👄 MOUTH</span>
+        <span class="status-badge-val" id="quick-mouth-val">ON</span>
       </button>
-    </div>
 
-    <hr>
+      <button class="status-card-btn active-yellow" id="quick-ai-btn" title="AI Model Status">
+        <span>🧠 AI LOCAL</span>
+        <span class="status-badge-val" id="quick-ai-val">READY</span>
+      </button>
+    </section>
 
-    <!-- Settings Section -->
-    <div id="settings-section">
-      <h3>🤖 AI Summarization</h3>
-      
-      <!-- Display Mode Selection -->
-      <div class="setting-group">
-        <label class="setting-label" for="display-mode">Display Location:</label>
-        <select id="display-mode" class="setting-select">
-          <option value="panel">Side Panel Only</option>
-          <option value="tooltip" selected>Tooltip Only</option>
-        </select>
+    <!-- 4. CURRENTLY LOOKING AT CARD -->
+    <section class="focus-card">
+      <div class="focus-card-header">
+        <span class="focus-label">CURRENTLY LOOKING AT</span>
+        <span class="focus-domain" id="page-domain">active-tab</span>
       </div>
-      
-      <div class="radio-group">
-        <label>
-          <input type="radio" name="api-choice" value="summarization" id="radio-summarization" checked>
-          <span>Summarization API</span>
-        </label>
-        <label>
-          <input type="radio" name="api-choice" value="prompt" id="radio-prompt">
-          <span>Prompt API (Custom)</span>
-        </label>
-      </div>
-      
-      <div id="prompt-container" class="hidden">
-        <label for="custom-prompt">Custom Prompt:</label>
-        <textarea id="custom-prompt" rows="3" placeholder="Enter your summarization prompt...">Summarize this article in 2-3 sentences</textarea>
-      </div>
-    </div>
 
-    <hr>
-    
-    <!-- Loading States -->
-    <div id="loading-extract" class="hidden">
-      <div class="spinner"></div>
-      <p>Extracting content...</p>
-    </div>
-    
-    <div id="loading-summarize" class="hidden">
-      <div class="spinner"></div>
-      <p>Generating summary...</p>
-    </div>
-    
-    <!-- Content Area -->
-    <div id="content-area" class="hidden">
-      <h1 id="title"></h1>
-      
-      <div id="summary-section">
-        <h2>AI Summary</h2>
-        <div id="ai-summary"></div>
+      <div class="focus-title-bar">
+        <span>🌐</span>
+        <span id="page-title">Loading active webpage...</span>
       </div>
-      
-      <button id="toggle-full-content" class="toggle-btn">View Full Content</button>
-      
-      <div id="full-content-section" class="hidden">
-        <h2>Full Content</h2>
+
+      <button class="summarize-btn" id="summarize-page-btn" title="Extract and summarize this page with AI">
+        <span>✦ SUMMARIZE THIS PAGE</span>
+        <span class="hands-free-tag">hands-free</span>
+      </button>
+
+      <div class="action-row-2">
+        <button class="btn-secondary-brutal" id="calibrate-head-quick-btn">
+          <span>🎯 CALIBRATE</span>
+        </button>
+        <button class="btn-secondary-brutal" id="recenter-quick-btn">
+          <span>⚡ RE-CENTER (Alt+C)</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 5. LIVE AI SUMMARY / CONTENT AREA -->
+    <section class="summary-container hidden" id="content-area">
+      <div class="summary-header-row">
+        <div class="card-title">
+          <span>🧠</span> <span id="title">Page Summary</span>
+        </div>
+        <button class="btn-secondary-brutal" id="copy-summary-btn" style="padding: 4px 8px; font-size: 10px;">📋 Copy</button>
+      </div>
+
+      <div class="summary-body" id="ai-summary">
+        <!-- Live stream or cached summary content inserted here -->
+      </div>
+
+      <div class="summary-actions-bar">
+        <button class="btn-secondary-brutal" id="toggle-full-content" style="padding: 4px 8px; font-size: 10px;">View Full Content</button>
+        <span class="card-badge" style="font-size: 9px;">100% On-Device</span>
+      </div>
+
+      <div id="full-content-section" class="hidden" style="margin-top: 8px; font-size: 11px; max-height: 200px; overflow-y: auto; background: #FAFAFA; padding: 8px; border-radius: 6px; border: 1px solid #E4E4E7;">
         <div id="article-content"></div>
       </div>
-    </div>
-    
-    <!-- Error State -->
-    <div id="error" class="hidden">
-      <p id="error-message"></p>
-      <div id="fallback-content" class="hidden">
-        <h2>Full Content (Fallback)</h2>
-        <h1 id="fallback-title"></h1>
-        <div id="fallback-article"></div>
-      </div>
-    </div>
-    
-    <!-- Model Download State -->
-    <div id="model-download" class="card centered" hidden>
-      <div class="icon">🤖</div>
-      <h3 id="model-download-title">AI Model Required</h3>
-      <p id="model-download-message">The Prompt API model needs to be downloaded (2GB, one-time only)</p>
-      <button id="download-model-btn" class="btn primary">
-        Download Prompt API Model
-      </button>
-      <div class="download-progress" hidden>
-        <div class="progress-bar">
-          <div class="progress-fill"></div>
+    </section>
+
+    <!-- 6. HEAD TRACKING SETTINGS CARD -->
+    <section class="brutal-card">
+      <div class="card-title-row">
+        <div class="card-title">
+          <span>🎯</span> Head Tracking (Hands-Free)
         </div>
-        <p class="progress-text">Preparing download...</p>
+        <span class="card-badge" id="tracking-mode-badge">Active</span>
       </div>
-    </div>
-    
-    <!-- Welcome State -->
-    <div id="welcome">
-      <p>Enable head tracking above for hands-free browsing, or hover over any link to preview and get an instant AI summary!</p>
+
+      <div class="setting-row">
+        <label class="toggle-wrapper" for="gaze-enabled">
+          <div>
+            <div class="toggle-title">Enable Head Tracking</div>
+            <div class="toggle-help">Camera tracks head rotation to move cursor smoothly</div>
+          </div>
+          <input type="checkbox" id="gaze-enabled" class="switch-input" checked>
+        </label>
+      </div>
+
+      <div class="slider-group">
+        <div class="slider-label-row">
+          <span>Dwell Click Delay</span>
+          <span class="slider-val-badge"><span id="dwell-value">600</span>ms</span>
+        </div>
+        <input type="range" id="dwell-time" min="300" max="1200" step="50" value="600" class="brutal-slider">
+      </div>
+
+      <div class="slider-group">
+        <div class="slider-label-row">
+          <span>Cursor Speed</span>
+          <span class="slider-val-badge" id="speed-quick-badge">Slow &amp; Steady</span>
+        </div>
+        <input type="range" id="head-speed-quick-slider" min="1" max="3" step="1" value="1" class="brutal-slider">
+      </div>
+
+      <div class="setting-row">
+        <label class="toggle-wrapper" for="magnetic-snap-enabled">
+          <div>
+            <div class="toggle-title">🧲 Magnetic Smart Snapping</div>
+            <div class="toggle-help">Snaps cursor to nearby links &amp; buttons to eliminate jitter</div>
+          </div>
+          <input type="checkbox" id="magnetic-snap-enabled" class="switch-input" checked>
+        </label>
+      </div>
+
+      <div class="slider-group" id="snap-radius-group">
+        <div class="slider-label-row">
+          <span>Magnetic Snap Radius</span>
+          <span class="slider-val-badge"><span id="snap-radius-val">40</span>px</span>
+        </div>
+        <input type="range" id="snap-radius" min="20" max="80" step="5" value="40" class="brutal-slider">
+      </div>
+
+      <button id="calibrate-btn" class="btn-secondary-brutal" style="width: 100%; padding: 8px;">
+        Calibrate Head Position (Alt+H)
+      </button>
+    </section>
+
+    <!-- 7. MOUTH CLICK & BLINK GESTURES CARD -->
+    <section class="brutal-card">
+      <div class="card-title-row">
+        <div class="card-title">
+          <span>👄</span> Hands-Free Gestures
+        </div>
+        <span class="card-badge" id="mouth-status-text">Ready</span>
+      </div>
+
+      <div class="setting-row">
+        <label class="toggle-wrapper" for="mouth-click-enabled">
+          <div>
+            <div class="toggle-title">Universal Mouth Click</div>
+            <div class="toggle-help">Open mouth wide to click, pause/play video, or follow link</div>
+          </div>
+          <input type="checkbox" id="mouth-click-enabled" class="switch-input" checked>
+        </label>
+      </div>
+
+      <button id="calibrate-mouth-btn" class="btn-secondary-brutal" style="width: 100%; padding: 8px;">
+        Calibrate Mouth Open/Close (Alt+M)
+      </button>
+
+      <div class="setting-row" style="margin-top: 4px;">
+        <label class="toggle-wrapper" for="wink-seek-enabled">
+          <div>
+            <div class="toggle-title">👁️ YouTube Wink Seek</div>
+            <div class="toggle-help">Left wink: ⏪ -10s | Right wink: ⏩ +10s</div>
+          </div>
+          <input type="checkbox" id="wink-seek-enabled" class="switch-input" checked>
+        </label>
+      </div>
+    </section>
+
+    <!-- 8. HANDS-FREE BROWSER AGENT (ASOS v1.0) -->
+    <section class="brutal-card">
+      <div class="card-title-row">
+        <div class="card-title">
+          <span>🤖</span> Browser Agent
+        </div>
+        <span class="card-badge">ASOS v1.0</span>
+      </div>
+
+      <button id="launch-agent-btn" class="summarize-btn" style="background: var(--color-mint); width: 100%; padding: 8px;">
+        Run Agent Goal (Alt+A)
+      </button>
+
+      <div class="quick-goals-row">
+        <button class="chip-btn quick-goal-btn" data-goal="Summarize main article">📄 Article</button>
+        <button class="chip-btn quick-goal-btn" data-goal="Scroll down to comments">💬 Comments</button>
+        <button class="chip-btn quick-goal-btn" data-goal="Find pricing on this page">🏷️ Pricing</button>
+      </div>
+    </section>
+
+    <!-- 9. AI SUMMARIZATION & MODEL SETTINGS -->
+    <section class="brutal-card">
+      <div class="card-title-row">
+        <div class="card-title">
+          <span>⚙️</span> Summarization Engine
+        </div>
+        <span class="card-badge" id="gpu-badge">WebGPU</span>
+      </div>
+
+      <div class="setting-row">
+        <label class="toggle-title" for="display-mode" style="margin-bottom: 4px;">Display Location:</label>
+        <select id="display-mode" class="brutal-select">
+          <option value="tooltip" selected>Tooltip Preview Only</option>
+          <option value="panel">Side Panel Only</option>
+          <option value="both">Both Tooltip &amp; Side Panel</option>
+        </select>
+      </div>
+
+      <div class="radio-options-list">
+        <label class="radio-pill-item">
+          <input type="radio" name="api-choice" value="summarization" id="radio-summarization" checked>
+          <span>Chrome Built-in Summarizer API</span>
+        </label>
+        <label class="radio-pill-item">
+          <input type="radio" name="api-choice" value="prompt" id="radio-prompt">
+          <span>Prompt API (Gemini Nano)</span>
+        </label>
+        <label class="radio-pill-item">
+          <input type="radio" name="api-choice" value="openweights" id="radio-openweights">
+          <span>Open-Weights WebGPU (SmolLM2 / Local)</span>
+        </label>
+      </div>
+
+      <div id="prompt-container" class="hidden">
+        <label class="toggle-title" for="custom-prompt" style="margin-bottom: 4px; display: block;">Custom Prompt:</label>
+        <textarea id="custom-prompt" rows="2" class="brutal-textarea" placeholder="Enter custom prompt...">Summarize this article in 2-3 sentences</textarea>
+      </div>
+    </section>
+
+    <!-- 10. ZERO TELEMETRY PRIVACY AUDIT CARD -->
+    <section class="privacy-card">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <span style="font-size: 11px; font-weight: 800; font-family: var(--font-grotesk);">🛡️ 100% ON-DEVICE PRIVACY</span>
+        <span style="font-size: 10px; font-weight: 700; color: #059669; font-family: var(--font-mono);">ZERO TELEMETRY</span>
+      </div>
+      <p style="font-size: 10.5px; color: var(--color-muted); line-height: 1.35;">
+        All camera frames and AI models process strictly in-memory. Zero video or private data ever leaves your machine.
+      </p>
+      <a href="test/privacy-audit.html" target="_blank" style="font-size: 10.5px; color: #2563EB; font-weight: 700; text-decoration: none;">
+        Open Real-Time Privacy Audit →
+      </a>
+    </section>
+
+    <!-- HIDDEN COMPATIBILITY CONTAINERS -->
+    <div id="welcome" class="hidden"></div>
+    <div id="loading-extract" class="hidden"></div>
+    <div id="loading-summarize" class="hidden"></div>
+    <div id="error" class="hidden"><p id="error-message"></p></div>
+    <span id="mouth-status-dot" class="hidden"></span>
+
+  </div>
+
+  <!-- SHORTCUTS MODAL -->
+  <div class="modal-overlay hidden" id="shortcuts-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="font-grotesk" style="font-size: 14px; font-weight: 800;">⌨️ Keyboard Shortcuts</h3>
+        <button class="icon-btn" id="close-shortcuts-btn" style="width: 26px; height: 26px;">✕</button>
+      </div>
+      <div class="shortcut-row">
+        <span>Calibrate Head Pointer</span>
+        <span class="kbd-tag">Alt + H</span>
+      </div>
+      <div class="shortcut-row">
+        <span>Re-Center Pointer</span>
+        <span class="kbd-tag">Alt + C</span>
+      </div>
+      <div class="shortcut-row">
+        <span>Calibrate Mouth Click</span>
+        <span class="kbd-tag">Alt + M</span>
+      </div>
+      <div class="shortcut-row">
+        <span>Run Browser Agent</span>
+        <span class="kbd-tag">Alt + A</span>
+      </div>
+      <div class="shortcut-row">
+        <span>Toggle Pointer Visibility</span>
+        <span class="kbd-tag">Alt + P</span>
+      </div>
+      <div class="shortcut-row">
+        <span>Toggle Camera Preview</span>
+        <span class="kbd-tag">Alt + V</span>
+      </div>
+      <div class="shortcut-row">
+        <span>Toggle Debug HUD</span>
+        <span class="kbd-tag">Shift + H</span>
+      </div>
+      <div class="shortcut-row">
+        <span>Cancel Active Summary</span>
+        <span class="kbd-tag">Esc</span>
+      </div>
     </div>
   </div>
-  
-  <script src="sidepanel.js?v=2"></script>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-overlay hidden" id="settings-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="font-grotesk" style="font-size: 14px; font-weight: 800;">⚙️ Glance Preferences</h3>
+        <button class="icon-btn" id="close-settings-btn" style="width: 26px; height: 26px;">✕</button>
+      </div>
+
+      <div class="setting-row">
+        <label class="toggle-wrapper" for="sound-effects-toggle">
+          <div>
+            <div class="toggle-title">🔊 Audio Feedback</div>
+            <div class="toggle-help">Play audio chime on click and calibration</div>
+          </div>
+          <input type="checkbox" id="sound-effects-toggle" class="switch-input" checked>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <label class="toggle-wrapper" for="virtual-tab-bar-toggle">
+          <div>
+            <div class="toggle-title">📑 Virtual Tab Bar</div>
+            <div class="toggle-help">Top gaze-responsive virtual tab switcher</div>
+          </div>
+          <input type="checkbox" id="virtual-tab-bar-toggle" class="switch-input" checked>
+        </label>
+      </div>
+
+      <div class="slider-group">
+        <div class="slider-label-row">
+          <span>Head Tracking Speed</span>
+          <span class="slider-val-badge" id="speed-val">Slow &amp; Steady</span>
+        </div>
+        <input type="range" id="head-speed-slider" min="1" max="3" step="1" value="1" class="brutal-slider">
+      </div>
+
+      <button class="btn-secondary-brutal" id="save-close-settings-btn" style="margin-top: 8px; width: 100%;">
+        Save &amp; Close
+      </button>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
 </body>
 </html>

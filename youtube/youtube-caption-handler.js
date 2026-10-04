@@ -173,6 +173,40 @@
         data: captionData || null
       }, '*');
     }
+
+    if (event.data.type === 'GLANCE_SEEK_VIDEO') {
+      const seconds = Number(event.data.seconds);
+      if (Number.isFinite(seconds) && seconds !== 0) {
+        const player = document.getElementById('movie_player') || window.movie_player;
+        if (player && typeof player.seekBy === 'function') {
+          player.seekBy(seconds);
+          console.log(`[YouTube Handler] movie_player.seekBy(${seconds}) executed`);
+        }
+      }
+    }
+
+    if (event.data.type === 'GLANCE_TOGGLE_VIDEO') {
+      const player = document.getElementById('movie_player') || window.movie_player;
+      if (player) {
+        if (typeof player.getPlayerState === 'function') {
+          const state = player.getPlayerState();
+          // State: 1 = playing, 2 = paused, 3 = buffering, etc.
+          if (state === 1) {
+            if (typeof player.pauseVideo === 'function') player.pauseVideo();
+          } else {
+            if (typeof player.playVideo === 'function') player.playVideo();
+          }
+          console.log(`[YouTube Handler] movie_player toggled play/pause (state was ${state})`);
+        } else if (typeof player.pauseVideo === 'function' && typeof player.playVideo === 'function') {
+          const video = player.querySelector('video') || document.querySelector('video');
+          if (video && !video.paused) {
+            player.pauseVideo();
+          } else {
+            player.playVideo();
+          }
+        }
+      }
+    }
   });
   
   // Initialize interception

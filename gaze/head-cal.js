@@ -7,8 +7,8 @@
   window.__gazeHeadCalInitialized = true;
 
   const HEAD_CAL_STORAGE_KEY = 'headCalV2';
-  const MIN_RANGE_HORIZONTAL = 0.24;
-  const MIN_RANGE_VERTICAL = 0.22;
+  const MIN_RANGE_HORIZONTAL = 0.36;
+  const MIN_RANGE_VERTICAL = 0.30;
   const MIN_SAMPLES_PER_STEP = 4;         // Reduced from 8 for easier calibration
   const MAX_SAMPLES_PER_STEP = 120;
   const CAPTURE_TIMEOUT_MS = 1500;        // Increased from 1200ms for more capture time

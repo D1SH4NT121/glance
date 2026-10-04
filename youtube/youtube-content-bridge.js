@@ -54,7 +54,7 @@
           console.log('[YouTube Bridge] Received captions for:', videoId);
           pending.resolve(data);
         } else {
-          console.warn('[YouTube Bridge] No captions for:', videoId);
+          console.log('[YouTube Bridge] No captions for:', videoId);
           pending.reject(new Error('NO_CAPTIONS'));
         }
       }
@@ -119,7 +119,7 @@
           });
         })
         .catch(error => {
-          console.warn('[YouTube Bridge] Failed to get captions:', error.message);
+          console.log('[YouTube Bridge] Captions unavailable for video:', error.message);
           sendResponse({
             success: false,
             error: error.message,

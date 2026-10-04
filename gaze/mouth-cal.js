@@ -161,8 +161,8 @@
     const openRatio = window.__mouthCalOpen;
     const closedRatio = window.__mouthCalClosed;
 
-    // Calculate threshold at 70% between closed and open
-    const threshold = closedRatio + (openRatio - closedRatio) * 0.7;
+    // Calculate threshold at 48% between closed and open (natural, easy activation)
+    const threshold = closedRatio + (openRatio - closedRatio) * 0.48;
 
     const calibration = {
       version: 1,

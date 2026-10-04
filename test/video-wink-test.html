@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Glance - Eye Wink Video Seek Test Harness</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 30px 20px;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .header h1 {
+      font-size: 28px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #38bdf8, #818cf8, #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+    .header p {
+      color: #94a3b8;
+      font-size: 15px;
+    }
+    .card {
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 24px;
+      max-width: 840px;
+      width: 100%;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(12px);
+    }
+    .video-wrapper {
+      position: relative;
+      width: 100%;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+      aspect-ratio: 16 / 9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 18px;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .btn-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    button {
+      background: #334155;
+      color: #f8fafc;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    button:hover {
+      background: #475569;
+      border-color: rgba(255, 255, 255, 0.25);
+      transform: translateY(-1px);
+    }
+    button.primary {
+      background: #3b82f6;
+      border-color: #60a5fa;
+    }
+    button.primary:hover {
+      background: #2563eb;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.8);
+      font-size: 13px;
+      font-weight: 600;
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+    }
+    .log-box {
+      margin-top: 20px;
+      background: #090d16;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      padding: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      height: 140px;
+      overflow-y: auto;
+      color: #cbd5e1;
+    }
+    .log-entry {
+      margin-bottom: 4px;
+    }
+    .log-entry.rewind { color: #38bdf8; }
+    .log-entry.forward { color: #c084fc; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>👁️ Glance - Eye Wink Video Seek Test</h1>
+    <p>Left Wink: ⏪ -10s | Right Wink: ⏩ +10s (Works on YouTube & HTML5 Videos)</p>
+  </div>
+
+  <div class="card">
+    <div class="video-wrapper">
+      <video id="test-video" controls loop playsinline>
+        <source src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" type="video/mp4">
+        Your browser does not support the video tag.
+      </video>
+    </div>
+
+    <div class="controls">
+      <div class="btn-group">
+        <button id="btn-seek-back" title="Simulate Left Wink (-10s)">⏪ Wink Left (-10s)</button>
+        <button id="btn-seek-fwd" title="Simulate Right Wink (+10s)">⏩ Wink Right (+10s)</button>
+      </div>
+
+      <div class="status-badge" id="seek-status">
+        Current Time: <span id="current-time">0:00</span> / <span id="total-duration">--:--</span>
+      </div>
+    </div>
+
+    <div style="margin-top: 14px; padding: 10px 16px; background: rgba(15, 23, 42, 0.9); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08); display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+      <div>Live Eye Monitor: <span id="live-eye-stats" style="font-weight: 700; color: #38bdf8;">Waiting for camera/gaze...</span></div>
+      <div id="live-eye-badge" style="padding: 2px 8px; border-radius: 4px; background: #1e293b; font-weight: 600;">Gaze Idle</div>
+    </div>
+
+    <div class="log-box" id="event-log">
+      <div class="log-entry" style="color: #64748b;">[Ready] Glance wink seeker active. Wink your left or right eye or click the simulation buttons above.</div>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('test-video');
+    const timeDisplay = document.getElementById('current-time');
+    const durationDisplay = document.getElementById('total-duration');
+    const logBox = document.getElementById('event-log');
+    const btnBack = document.getElementById('btn-seek-back');
+    const btnFwd = document.getElementById('btn-seek-fwd');
+
+    function fmt(seconds) {
+      if (!Number.isFinite(seconds)) return '0:00';
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${m}:${s < 10 ? '0' : ''}${s}`;
+    }
+
+    video.addEventListener('timeupdate', () => {
+      timeDisplay.textContent = fmt(video.currentTime);
+    });
+
+    video.addEventListener('loadedmetadata', () => {
+      durationDisplay.textContent = fmt(video.duration);
+    });
+
+    function log(msg, type = '') {
+      const el = document.createElement('div');
+      el.className = `log-entry ${type}`;
+      el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logBox.appendChild(el);
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // Manual test triggers (dispatch standard custom events)
+    btnBack.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('video:seek', { detail: { seconds: -10, direction: 'left', ts: performance.now() } }));
+    });
+
+    btnFwd.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('video:seek', { detail: { seconds: 10, direction: 'right', ts: performance.now() } }));
+    });
+
+    // Listen to Glance events
+    window.addEventListener('video:seek', (e) => {
+      const s = e.detail && e.detail.seconds;
+      log(`⚡ Event video:seek received: ${s > 0 ? '+' : ''}${s}s (New time: ${fmt(video.currentTime)})`, s < 0 ? 'rewind' : 'forward');
+    });
+
+    window.addEventListener('wink:left', () => {
+      log('👁️ Event wink:left detected! Rewinding -10s', 'rewind');
+    });
+
+    window.addEventListener('wink:right', () => {
+      log('👁️ Event wink:right detected! Forwarding +10s', 'forward');
+    });
+
+    // Poll live eye ratios from Glance runtime
+    const eyeStatsEl = document.getElementById('live-eye-stats');
+    const eyeBadgeEl = document.getElementById('live-eye-badge');
+    setInterval(() => {
+      const stats = window.__lastEyeEAR;
+      if (stats && Number.isFinite(stats.left)) {
+        const l = (stats.left * 100).toFixed(0);
+        const r = (stats.right * 100).toFixed(0);
+        eyeStatsEl.textContent = `Left: ${l}% | Right: ${r}%`;
+        eyeBadgeEl.textContent = stats.status || 'ACTIVE';
+        if (stats.isLeftWink) {
+          eyeBadgeEl.style.background = '#0284c7';
+          eyeBadgeEl.style.color = '#fff';
+        } else if (stats.isRightWink) {
+          eyeBadgeEl.style.background = '#7c3aed';
+          eyeBadgeEl.style.color = '#fff';
+        } else {
+          eyeBadgeEl.style.background = '#1e293b';
+          eyeBadgeEl.style.color = '#94a3b8';
+        }
+      }
+    }, 100);
+  </script>
+</body>
+</html>

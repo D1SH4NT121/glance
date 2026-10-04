@@ -67,20 +67,35 @@
     console.debug('[GazeOverlay] Pointer restored after calibration');
   }
 
+  window.addEventListener('gaze:magnetic-lock', () => {
+    if (pointerEl) pointerEl.classList.add('magnetic-active');
+  });
+  window.addEventListener('gaze:magnetic-release', () => {
+    if (pointerEl) pointerEl.classList.remove('magnetic-active');
+  });
+
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) {
       return;
     }
-    try {
-      const url = chrome.runtime.getURL('gaze/gaze-overlay.css');
-      const link = document.createElement('link');
-      link.id = STYLE_ID;
-      link.rel = 'stylesheet';
-      link.href = url;
-      document.documentElement.appendChild(link);
-    } catch (error) {
-      console.warn('[GazeOverlay] Failed to load stylesheet:', error);
-    }
+    const styles = [
+      { id: STYLE_ID, path: 'gaze/gaze-overlay.css' },
+      { id: 'gaze-magnetic-style', path: 'gaze/magnetic-snapping.css' },
+      { id: 'gaze-agent-style', path: 'gaze/agent-skill-harness.css' }
+    ];
+    styles.forEach(s => {
+      try {
+        if (!document.getElementById(s.id)) {
+          const link = document.createElement('link');
+          link.id = s.id;
+          link.rel = 'stylesheet';
+          link.href = chrome.runtime.getURL(s.path);
+          document.documentElement.appendChild(link);
+        }
+      } catch (error) {
+        console.warn('[GazeOverlay] Failed to load stylesheet:', s.path, error);
+      }
+    });
   }
 
   function ensureElements() {
@@ -157,6 +172,12 @@
           }
         }));
         console.debug('[GazeOverlay] Head pointer mode', window.__gazeHeadMode ? 'ENABLED' : 'DISABLED');
+        return;
+      }
+      if (code === 'KeyC') {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent('gaze:recenter'));
+        console.debug('[GazeOverlay] Triggered Alt+C face re-center');
         return;
       }
     }

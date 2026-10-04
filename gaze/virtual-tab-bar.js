@@ -250,20 +250,37 @@
   function switchToTab(tabId) {
     cancelDwell();
     playClickChime();
-    chrome.runtime.sendMessage({ type: 'SWITCH_TAB', tabId: Number(tabId) });
+    try {
+      if (chrome.runtime && chrome.runtime.id) {
+        chrome.runtime.sendMessage({ type: 'SWITCH_TAB', tabId: Number(tabId) }, () => {
+          if (chrome.runtime.lastError) {}
+        });
+      }
+    } catch (_) {}
   }
 
   function closeTab(tabId) {
     cancelDwell();
-    chrome.runtime.sendMessage({ type: 'CLOSE_TAB', tabId: Number(tabId) }, () => {
-      fetchTabs();
-    });
+    try {
+      if (chrome.runtime && chrome.runtime.id) {
+        chrome.runtime.sendMessage({ type: 'CLOSE_TAB', tabId: Number(tabId) }, () => {
+          if (chrome.runtime.lastError) return;
+          fetchTabs();
+        });
+      }
+    } catch (_) {}
   }
 
   function createNewTab() {
     cancelDwell();
     playClickChime();
-    chrome.runtime.sendMessage({ type: 'CREATE_TAB' });
+    try {
+      if (chrome.runtime && chrome.runtime.id) {
+        chrome.runtime.sendMessage({ type: 'CREATE_TAB' }, () => {
+          if (chrome.runtime.lastError) {}
+        });
+      }
+    } catch (_) {}
   }
 
   // Dwell Engine for Virtual Tab Bar

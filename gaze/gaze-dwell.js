@@ -6,14 +6,14 @@
   const TOOLTIP_ID = 'gaze-summary-tooltip';
   const TOOLTIP_STYLE_ID = 'gaze-summary-tooltip-styles';
   const DEBUG_DWELL = true;
-  const DEFAULT_DWELL_MS = 600;
+  const DEFAULT_DWELL_MS = 300;
   const RECENT_WINDOW_MS = 20000;
   const MAX_RECENT_ENTRIES = 32;
   const EDGE_PAD_PX = 180;
   const EDGE_HOLD_MS = 400;
   const MAX_LINK_SCAN = 500;
-  const DEADZONE_PX = 12;
-  const STICKY_RADIUS_PX = 45;
+  const DEADZONE_PX = 1.5;
+  const STICKY_RADIUS_PX = 50;
   const SCROLL_ZONE_ID = 'gaze-scroll-zones';
   const NAV_ZONE_WIDTH = 80; // Width of left/right navigation zones in pixels
   const DWELL_INDICATOR_ID = 'gaze-dwell-indicator';
@@ -28,6 +28,8 @@
   let dwellTarget = null;
   let dwellAccum = 0;
   let lastPointTs = performance.now();
+  let lastDwellTargetTs = 0;
+  const prefetchedUrls = new Set();
   let recentSummaries = new Map();
   let requestSeq = 0;
   let debugLastHref = null;
@@ -386,10 +388,41 @@
     recentSummaries = new Map(Array.from(recentSummaries.entries()).filter(([_, ts]) => ts >= threshold));
   }
 
+  function isRestrictedFetchUrl(url) {
+    if (!url) return true;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return true;
+      }
+      const host = parsed.hostname.toLowerCase();
+      if (
+        host === 'chrome.google.com' ||
+        host === 'chromewebstore.google.com' ||
+        host.endsWith('.chrome.google.com') ||
+        host === 'addons.mozilla.org' ||
+        host === 'microsoftedge.microsoft.com'
+      ) {
+        return true;
+      }
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
   function shouldSkipUrl(url) {
+    if (isRestrictedFetchUrl(url)) return true;
     const lastTs = recentSummaries.get(url);
     if (!lastTs) return false;
     return (Date.now() - lastTs) < RECENT_WINDOW_MS;
+  }
+
+  function prefetchLink(rawUrl) {
+    const url = normalizeUrl(rawUrl);
+    if (!url || prefetchedUrls.has(url) || shouldSkipUrl(url)) return;
+    prefetchedUrls.add(url);
+    sendMessagePromise({ type: 'FETCH_CONTENT', url }).catch(() => {});
   }
 
   function updateRecent(url) {
@@ -397,11 +430,40 @@
     cleanRecentSummaries();
   }
 
+  let sharedAudioCtx = null;
+  let hasUserInteracted = false;
+
+  ['pointerdown', 'keydown', 'touchstart'].forEach((evt) => {
+    window.addEventListener(evt, () => {
+      hasUserInteracted = true;
+      if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+        sharedAudioCtx.resume().catch(() => {});
+      }
+    }, { once: true, passive: true });
+  });
+
   function beep(frequency = 440, duration = 120) {
     try {
       const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextCtor) return;
-      const ctx = new AudioContextCtor();
+
+      // Chrome Web Audio Autoplay Policy: AudioContext cannot start without user gesture
+      if (!hasUserInteracted) {
+        return;
+      }
+
+      if (!sharedAudioCtx) {
+        sharedAudioCtx = new AudioContextCtor();
+      }
+
+      if (sharedAudioCtx.state === 'suspended') {
+        sharedAudioCtx.resume().catch(() => {});
+        if (sharedAudioCtx.state === 'suspended') {
+          return;
+        }
+      }
+
+      const ctx = sharedAudioCtx;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
@@ -413,9 +475,8 @@
       gain.gain.exponentialRampToValueAtTime(0.0001, now + duration / 1000);
       osc.start(now);
       osc.stop(now + duration / 1000 + 0.05);
-      osc.onended = () => ctx.close();
     } catch (error) {
-      // ignore audio errors
+      // ignore audio errors silently
     }
   }
 
@@ -632,21 +693,31 @@
     updateScrollZoneVisibility(topIntensity, bottomIntensity);
   }
 
+  function showClickRipple(x, y) {
+    try {
+      const ripple = document.createElement('div');
+      ripple.className = 'gaze-click-ripple';
+      ripple.style.left = `${x}px`;
+      ripple.style.top = `${y}px`;
+      ripple.style.width = '36px';
+      ripple.style.height = '36px';
+      document.body.appendChild(ripple);
+      setTimeout(() => ripple.remove(), 450);
+    } catch (e) {}
+  }
+
   function synthClick(target, button = 0) {
     if (!target) return;
+    showClickRipple(lastPointerX, lastPointerY);
+
     const rect = target.getBoundingClientRect();
     const clientX = clamp(lastPointerX, rect.left, rect.right);
     const clientY = clamp(lastPointerY, rect.top, rect.bottom);
-    if (typeof target.focus === 'function') {
-      try {
-        target.focus({ preventScroll: true });
-      } catch (error) {
-        // ignore focus errors
-      }
-    }
+
     const downInit = {
       bubbles: true,
       cancelable: true,
+      view: window,
       clientX,
       clientY,
       button,
@@ -655,20 +726,99 @@
     const upInit = {
       bubbles: true,
       cancelable: true,
+      view: window,
       clientX,
       clientY,
       button,
       buttons: 0
     };
 
-    ['pointerover', 'pointerenter', 'mousemove', 'pointerdown', 'mousedown'].forEach((type) => {
-      target.dispatchEvent(new MouseEvent(type, downInit));
+    // 1. Video elements & Player surfaces (YouTube, HTML5 Video, etc.)
+    const isVideoSurface = target.tagName === 'VIDEO' || 
+      Boolean(target.closest && (
+        target.closest('.html5-video-player, #movie_player, ytd-player, ytd-watch-flexy, [class*="video-player"], [class*="video-container"]')
+      ) && !target.closest('button, [role="button"], a, input, select, textarea, [role="slider"], .ytp-chrome-bottom, #actions, ytd-menu-renderer, .tab-chip'));
+
+    if (isVideoSurface) {
+      console.log('[GazeDwell] 🎬 Video surface clicked! Toggling video playback');
+      const isYouTube = window.location.hostname.includes('youtube.com') || !!document.getElementById('movie_player');
+      if (isYouTube) {
+        window.postMessage({ type: 'GLANCE_TOGGLE_VIDEO' }, '*');
+        const ytPlayBtn = document.querySelector('.ytp-play-button');
+        if (ytPlayBtn && typeof ytPlayBtn.click === 'function') {
+          // If page-context movie_player bridge is not ready, click play button
+          if (!window.movie_player && !document.getElementById('movie_player')) {
+            ytPlayBtn.click();
+          }
+        }
+        return;
+      }
+
+      // Generic HTML5 video element toggle
+      const videoEl = target.tagName === 'VIDEO' ? target : 
+        (target.querySelector && target.querySelector('video')) || 
+        (target.closest && target.closest('.html5-video-player, #movie_player, ytd-player')?.querySelector('video')) || 
+        document.querySelector('video');
+
+      if (videoEl && typeof videoEl.play === 'function') {
+        if (videoEl.paused) {
+          videoEl.play().catch(() => {});
+        } else {
+          videoEl.pause();
+        }
+        return;
+      }
+    }
+
+    // 2. Links (navigate to URL or trigger SPA router)
+    const linkTarget = target.closest('a, [role="link"]');
+    if (linkTarget) {
+      console.log('[GazeDwell] 🔗 Link target clicked:', linkTarget.href || linkTarget);
+      if (typeof linkTarget.focus === 'function') {
+        try { linkTarget.focus({ preventScroll: true }); } catch (e) {}
+      }
+      ['pointerdown', 'mousedown'].forEach((type) => {
+        try { linkTarget.dispatchEvent(new MouseEvent(type, downInit)); } catch (e) {}
+      });
+      ['pointerup', 'mouseup'].forEach((type) => {
+        try { linkTarget.dispatchEvent(new MouseEvent(type, upInit)); } catch (e) {}
+      });
+      if (typeof linkTarget.click === 'function') {
+        linkTarget.click();
+      } else if (linkTarget.href) {
+        window.location.href = linkTarget.href;
+      }
+      return;
+    }
+
+    // 3. Interactive Buttons, Form Inputs, Tabs, Controls, and general elements
+    const interactiveTarget = target.closest('button, [role="button"], input, summary, select, textarea, .tab-chip, [tabindex]') || target;
+
+    if (typeof interactiveTarget.focus === 'function') {
+      try {
+        interactiveTarget.focus({ preventScroll: true });
+      } catch (error) {}
+    }
+
+    ['pointerdown', 'mousedown'].forEach((type) => {
+      try { interactiveTarget.dispatchEvent(new MouseEvent(type, downInit)); } catch (e) {}
     });
-    ['mouseup', 'pointerup', 'click'].forEach((type) => {
-      target.dispatchEvent(new MouseEvent(type, upInit));
+    ['mouseup', 'pointerup'].forEach((type) => {
+      try { interactiveTarget.dispatchEvent(new MouseEvent(type, upInit)); } catch (e) {}
     });
+
+    if (button === 0 && typeof interactiveTarget.click === 'function') {
+      try {
+        interactiveTarget.click();
+      } catch (e) {
+        interactiveTarget.dispatchEvent(new MouseEvent('click', upInit));
+      }
+    } else {
+      interactiveTarget.dispatchEvent(new MouseEvent('click', upInit));
+    }
+
     if (button === 2) {
-      target.dispatchEvent(new MouseEvent('contextmenu', {
+      interactiveTarget.dispatchEvent(new MouseEvent('contextmenu', {
         bubbles: true,
         cancelable: true,
         clientX,
@@ -735,34 +885,56 @@
       }
     }
 
-    if (targetElement !== dwellTarget) {
+    // Jitter tolerance & grace window for smooth, uninterrupted dwell accumulation
+    const isSameLink = Boolean(targetElement && dwellTarget && 
+      (targetElement === dwellTarget || 
+       (targetElement.closest && dwellTarget.closest && targetElement.closest('a') === dwellTarget.closest('a'))));
+
+    if (isSameLink) {
+      dwellAccum += delta;
+      lastDwellTargetTs = ts;
+    } else if (targetElement) {
       dwellTarget = targetElement;
-      dwellAccum = 0;
-      hideDwellIndicator();
+      dwellAccum = delta;
+      lastDwellTargetTs = ts;
+    } else {
+      // Pointer briefly slipped off edge (jitter) - grant 160ms grace window before resetting
+      if (ts - lastDwellTargetTs > 160) {
+        dwellTarget = null;
+        dwellAccum = 0;
+        hideDwellIndicator();
+        return;
+      }
     }
 
-    if (!targetElement) {
+    if (!dwellTarget) {
       hideDwellIndicator();
       return;
     }
 
-    dwellAccum += delta;
+    // Pre-fetch link content in background as soon as user dwells for 100ms
+    if (dwellAccum >= 100 && target && target.type === 'link' && target.element.href) {
+      prefetchLink(target.element.href);
+    }
+
     const progress = Math.min(1, dwellAccum / dwellThreshold);
-    updateDwellIndicator(targetElement, progress);
+    updateDwellIndicator(dwellTarget, progress);
 
     if (dwellAccum >= dwellThreshold) {
       dwellAccum = 0;
       hideDwellIndicator();
 
-      if (target.type === 'close-button') {
+      if (target && target.type === 'close-button') {
         // Close the tooltip
         hideTooltip();
         if (currentJob) {
           currentJob = null;
         }
-      } else if (target.type === 'link') {
-        // Trigger summary
-        triggerSummary(target.element);
+      } else if (dwellTarget) {
+        const linkToTrigger = (target && target.type === 'link') ? target.element : (dwellTarget.closest ? dwellTarget.closest('a') : dwellTarget);
+        if (linkToTrigger) {
+          triggerSummary(linkToTrigger);
+        }
       }
     }
   }
@@ -813,9 +985,18 @@
     }
 
     handlePageSummary(url, link, requestId).catch((error) => {
-      console.error('[GazeDwell] Summary failed:', error);
+      const isExpected = error?.message?.includes('message channel closed') ||
+                         error?.message?.includes('Extension context invalidated') ||
+                         error?.message?.includes('aborted');
+      if (isExpected) {
+        console.warn('[GazeDwell] Summary cancelled or channel disconnected:', error.message);
+      } else {
+        console.error('[GazeDwell] Summary failed:', error);
+      }
       if (currentJob && currentJob.id === requestId) {
-        renderError('Unable to summarize this page.');
+        if (!isExpected) {
+          renderError('Unable to summarize this page.');
+        }
         clearCurrentJob();
       }
     });
@@ -861,7 +1042,7 @@
         return;
       }
       if (response.status === 'aborted') {
-        renderError('Summary cancelled.');
+        hideTooltip();
         clearCurrentJob();
         return;
       }
@@ -884,8 +1065,12 @@
     if (currentJob && currentJob.id !== requestId) {
       return;
     }
-    if (!fetchResponse || fetchResponse.error) {
-      const message = fetchResponse && fetchResponse.error ? fetchResponse.error : 'Unable to fetch page content.';
+    if (!fetchResponse || fetchResponse.status === 'aborted') {
+      clearCurrentJob();
+      return;
+    }
+    if (fetchResponse.error) {
+      const message = fetchResponse.message || fetchResponse.error;
       renderError(message);
       clearCurrentJob();
       return;
@@ -905,15 +1090,14 @@
       return;
     }
 
-    if (!summaryResponse || summaryResponse.status === 'error') {
-      const message = summaryResponse && summaryResponse.error ? summaryResponse.error : 'Failed to summarize content.';
-      renderError(message);
+    if (!summaryResponse || summaryResponse.status === 'aborted') {
       clearCurrentJob();
       return;
     }
 
-    if (summaryResponse.status === 'aborted') {
-      renderError('Summary cancelled.');
+    if (summaryResponse.status === 'error') {
+      const message = summaryResponse.error || 'Failed to summarize content.';
+      renderError(message);
       clearCurrentJob();
       return;
     }
@@ -1037,18 +1221,23 @@
   }
 
   function sendMessagePromise(payload) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       try {
+        if (!chrome.runtime || !chrome.runtime.id) {
+          resolve({ status: 'aborted', error: 'Extension context invalidated' });
+          return;
+        }
         chrome.runtime.sendMessage(payload, (response) => {
           const runtimeError = chrome.runtime.lastError;
           if (runtimeError) {
-            reject(new Error(runtimeError.message || 'Unknown runtime error'));
+            const msg = runtimeError.message || 'Runtime communication error';
+            resolve({ status: 'aborted', error: msg });
             return;
           }
-          resolve(response);
+          resolve(response || { status: 'ok' });
         });
       } catch (error) {
-        reject(error);
+        resolve({ status: 'aborted', error: error?.message || 'Extension context invalidated' });
       }
     });
   }
@@ -1109,40 +1298,190 @@
     beep(button === 2 ? 320 : 560, 150);
   });
 
-  // Smile-to-click: trigger click on magnetically snapped target when user smiles
+  // Mouth open & close click: trigger click on magnetically snapped target, video player, link, or element under cursor
   window.addEventListener('smile:click', (event) => {
-    // Priority 1: Check if dwelling in navigation zone
-    if (navZoneDwelling) {
-      const now = performance.now();
-      const dwellDuration = now - navDwellStart;
+    // 1. Magnetically locked target (if magnet snapping active)
+    let target = null;
+    if (window.GlanceMagnet && window.GlanceMagnet.getLockedTarget()) {
+      target = window.GlanceMagnet.getLockedTarget();
+    }
 
-      // Require at least 300ms dwell before confirming navigation
-      if (dwellDuration >= 300) {
-        if (navZoneDwelling === 'back') {
-          window.history.back();
-          beep(400, 100); // Low beep for back
-          console.debug('[GazeDwell] Navigate BACK via mouth click');
-        } else if (navZoneDwelling === 'forward') {
-          window.history.forward();
-          beep(800, 100); // High beep for forward
-          console.debug('[GazeDwell] Navigate FORWARD via mouth click');
+    // 2. Direct element under cursor
+    if (!target) {
+      const elAtPoint = document.elementFromPoint(lastPointerX, lastPointerY);
+      if (elAtPoint) {
+        const interactiveChild = elAtPoint.closest('a, button, [role="button"], [role="link"], input, textarea, select, summary, .tab-chip, [tabindex]');
+        const videoParent = elAtPoint.closest('.html5-video-player, #movie_player, ytd-player, [class*="video-player"]');
+
+        if (interactiveChild) {
+          target = interactiveChild;
+        } else if (videoParent || elAtPoint.tagName === 'VIDEO') {
+          target = videoParent || elAtPoint;
+        } else {
+          target = elAtPoint;
         }
-        navZoneDwelling = null;
-        navDwellStart = 0;
-        return;
       }
     }
 
-    // Priority 2: Click on snapped target or nearest link
-    const target = lastSnapLink || nearestLink(lastPointerX, lastPointerY) || document.elementFromPoint(lastPointerX, lastPointerY);
+    // 3. Fallback: nearest link or interactive element
     if (!target) {
-      beep(280, 140);  // Error beep if no target
-      return;
+      target = nearestLink(lastPointerX, lastPointerY, 45);
     }
-    synthClick(target, 0);  // Left click only (button = 0)
-    beep(660, 150);  // Higher pitch beep for smile click (distinguishable from blink)
-    console.debug(`[GazeDwell] Smile click executed on:`, target);
+
+    if (!target) {
+      target = document.body;
+    }
+
+    synthClick(target, 0);
+    beep(640, 110);
+    console.debug(`[GazeDwell] 👄 Mouth click executed on:`, target);
   });
+
+  // Eye Wink Video Seeking (Left: -10s | Right: +10s)
+  window.addEventListener('video:seek', (event) => {
+    const seconds = event.detail && typeof event.detail.seconds === 'number' ? event.detail.seconds : 0;
+    if (seconds !== 0) {
+      handleVideoSeek(seconds);
+    }
+  });
+
+  let seekHudTimer = null;
+  let lastVideoSeekTime = 0;
+  const VIDEO_SEEK_DEBOUNCE_MS = 1000;
+
+  function handleVideoSeek(seconds) {
+    const now = performance.now();
+    if (now - lastVideoSeekTime < VIDEO_SEEK_DEBOUNCE_MS) {
+      return; // Debounce duplicate triggers within 1 second
+    }
+    lastVideoSeekTime = now;
+
+    let videoFound = false;
+    const isYouTube = window.location.hostname.includes('youtube.com') || !!document.getElementById('movie_player');
+
+    // 1. YouTube specialized player API
+    if (isYouTube) {
+      window.postMessage({ type: 'GLANCE_SEEK_VIDEO', seconds }, '*');
+      videoFound = true;
+    } else {
+      // 2. Direct HTML5 video element seeking for standard web video
+      const candidateVideos = Array.from(document.querySelectorAll('video'));
+      const targetVideo = candidateVideos.find(v => !v.paused && v.currentTime > 0) ||
+        candidateVideos.find(v => v.offsetWidth > 0 && v.offsetHeight > 0) ||
+        candidateVideos[0] || null;
+
+      if (targetVideo) {
+        videoFound = true;
+        try {
+          const dur = Number.isFinite(targetVideo.duration) && targetVideo.duration > 0 ? targetVideo.duration : 999999;
+          const cur = targetVideo.currentTime || 0;
+          targetVideo.currentTime = Math.max(0, Math.min(dur, cur + seconds));
+        } catch (e) {
+          console.debug('[GazeSeek] direct video seek error:', e);
+        }
+      }
+    }
+
+    const candidateVideos = Array.from(document.querySelectorAll('video'));
+    const targetVideo = document.querySelector('video.html5-main-video') ||
+      document.querySelector('.html5-video-player video') ||
+      candidateVideos.find(v => !v.paused && v.currentTime > 0) ||
+      candidateVideos[0] || null;
+
+    // 4. Pleasant auditory feedback
+    if (seconds < 0) {
+      beep(360, 110); // Lower pitch for rewind
+    } else {
+      beep(620, 110); // Higher pitch for forward
+    }
+
+    // 5. Visual HUD indicator badge over video or viewport
+    showSeekHud(seconds, targetVideo);
+    console.log(`[GazeSeek] 🎬 Video seeked ${seconds > 0 ? '+' : ''}${seconds}s (videoFound=${videoFound})`);
+  }
+
+  function showSeekHud(seconds, targetVideo) {
+    let hud = document.getElementById('glance-seek-hud');
+    if (!hud) {
+      hud = document.createElement('div');
+      hud.id = 'glance-seek-hud';
+      document.body.appendChild(hud);
+    }
+
+    if (seekHudTimer) {
+      clearTimeout(seekHudTimer);
+      seekHudTimer = null;
+    }
+
+    const isRewind = seconds < 0;
+    const sign = isRewind ? '-' : '+';
+    const absSec = Math.abs(seconds);
+    const icon = isRewind ? '⏪' : '⏩';
+    const accentColor = isRewind ? '#38bdf8' : '#c084fc';
+    const glowColor = isRewind ? 'rgba(56, 189, 248, 0.45)' : 'rgba(192, 132, 252, 0.45)';
+
+    hud.className = `glance-seek-hud ${isRewind ? 'seek-rewind' : 'seek-forward'}`;
+    hud.innerHTML = `
+      <span style="font-size: 26px; line-height: 1; margin-right: 10px;">${icon}</span>
+      <span style="font-weight: 700; font-size: 22px; letter-spacing: 0.5px;">${sign}${absSec}s</span>
+    `;
+
+    // Position HUD: center over video player if visible on screen, else center-top of viewport
+    let top = '18%';
+    let left = '50%';
+    if (targetVideo) {
+      const rect = targetVideo.getBoundingClientRect();
+      if (rect.width > 120 && rect.height > 80 && rect.bottom > 0 && rect.top < window.innerHeight) {
+        top = `${Math.round(rect.top + rect.height / 2)}px`;
+        left = `${Math.round(rect.left + rect.width / 2)}px`;
+      }
+    }
+
+    hud.style.cssText = `
+      position: fixed;
+      top: ${top};
+      left: ${left};
+      transform: translate(-50%, -50%) scale(0.85);
+      background: rgba(15, 23, 42, 0.9);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1.5px solid ${accentColor};
+      border-radius: 999px;
+      padding: 12px 26px;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 24px ${glowColor};
+      z-index: 2147483647;
+      pointer-events: none;
+      opacity: 0;
+      transition: transform 0.18s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.18s ease;
+    `;
+
+    // Pop-in animation
+    requestAnimationFrame(() => {
+      hud.style.opacity = '1';
+      hud.style.transform = 'translate(-50%, -50%) scale(1.08)';
+      setTimeout(() => {
+        if (hud) hud.style.transform = 'translate(-50%, -50%) scale(1)';
+      }, 140);
+    });
+
+    // Auto fade out
+    seekHudTimer = setTimeout(() => {
+      if (hud) {
+        hud.style.opacity = '0';
+        hud.style.transform = 'translate(-50%, -50%) scale(0.92)';
+        setTimeout(() => {
+          if (hud && hud.style.opacity === '0') {
+            hud.remove();
+          }
+        }, 250);
+      }
+    }, 700);
+  }
 
   function init() {
     ensureTooltipStyles();

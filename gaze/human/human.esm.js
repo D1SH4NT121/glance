@@ -14602,7 +14602,7 @@ Se.registerFlag("WEBGL_RENDER_FLOAT32_ENABLED", () => Se.getBool("WEBGL_FORCE_F1
 Se.registerFlag("WEBGL_DOWNLOAD_FLOAT_ENABLED", () => qI(Se.getNumber("WEBGL_VERSION")));
 Se.registerFlag("WEBGL_FENCE_API_ENABLED", () => jI(Se.getNumber("WEBGL_VERSION")));
 Se.registerFlag("WEBGL_SIZE_UPLOAD_UNIFORM", () => Se.getBool("WEBGL_RENDER_FLOAT32_ENABLED") ? 4 : 0);
-Se.registerFlag("WEBGL_DELETE_TEXTURE_THRESHOLD", () => -1, (r15) => {
+Se.registerFlag("WEBGL_DELETE_TEXTURE_THRESHOLD", () => 0, (r15) => {
   if (typeof r15 != "number") throw new Error(`WEBGL_DELETE_TEXTURE_THRESHOLD must be a number but got ${r15}.`);
   if (r15 < 0 && r15 !== -1) throw new Error(`WEBGL_DELETE_TEXTURE_THRESHOLD must be -1 (indicating never delete) or at least 0, but got ${r15}.`);
 });
@@ -16933,7 +16933,7 @@ function u9(r15) {
 var p9 = A().getNumber("CPU_HANDOFF_SIZE_THRESHOLD");
 var c9 = 600;
 function l9() {
-  return A().global.screen == null ? 1024 : A().global.screen.height * A().global.screen.width * window.devicePixelRatio * c9 / 1024 / 1024;
+  return 4096;
 }
 var Lc = class r13 extends ao {
   nextDataId() {
@@ -17280,8 +17280,7 @@ var Lc = class r13 extends ao {
   }
   acquireTexture(e, t10, o, n) {
     if (this.numBytesInGPU += this.computeBytes(e, o), !this.warnedAboutMemory && this.numBytesInGPU > this.numMBBeforeWarning * 1024 * 1024) {
-      let s = (this.numBytesInGPU / 1024 / 1024).toFixed(2);
-      this.warnedAboutMemory = true, console.warn(`High memory usage in GPU: ${s} MB, most likely due to a memory leak`);
+      this.warnedAboutMemory = true;
     }
     return this.textureManager.acquireTexture(e, t10, n);
   }
